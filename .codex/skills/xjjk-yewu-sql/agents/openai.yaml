@@ -1,0 +1,4 @@
+interface:
+  display_name: "XJJK_YEWU_SQL"
+  short_description: "Manage MySQL metadata caches and keyword-based schema lookup."
+  default_prompt: "Use $xjjk-yewu-sql to refresh MySQL metadata caches or find business-related tables across registered connections."

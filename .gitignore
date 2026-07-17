@@ -1,0 +1,35 @@
+# Local secrets
+config/credentials.local.json
+config/environments_config.json
+config/connections.json
+.env
+.env.*
+!.env.example
+
+# Generated workflow artifacts
+output/*
+!output/README.md
+scratch/*
+!scratch/README.md
+
+# Retrieved code caches
+output/code_sources/cache/
+output/code_sources/runs/
+
+# Database metadata state
+.codex/skills/xjjk-yewu-sql/state/connections.json
+.codex/skills/xjjk-yewu-sql/state/cache/*
+!.codex/skills/xjjk-yewu-sql/state/cache/.gitignore
+.codex/skills/xjjk-yewu-sql/state/documents/*
+!.codex/skills/xjjk-yewu-sql/state/documents/.gitignore
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# Test and tool caches
+.pytest_cache/
+.playwright/
+allure-results/
+allure-report/

@@ -1,0 +1,19 @@
+{
+  "environments": [
+    {
+      "name": "REPLACE_WITH_ENVIRONMENT_NAME",
+      "login_url": "https://example.test/login",
+      "api_domain": "https://api.example.test",
+      "account": "REPLACE_WITH_ACCOUNT",
+      "password": "REPLACE_WITH_PASSWORD",
+      "authorization": "REPLACE_WITH_TOKEN"
+    }
+  ],
+  "database": {
+    "host": "127.0.0.1",
+    "port": 3306,
+    "user": "REPLACE_WITH_READ_ONLY_USER",
+    "password": "REPLACE_WITH_PASSWORD",
+    "database": "REPLACE_WITH_DATABASE"
+  }
+}

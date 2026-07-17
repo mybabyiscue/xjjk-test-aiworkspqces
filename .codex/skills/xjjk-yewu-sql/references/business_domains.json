@@ -1,0 +1,54 @@
+{
+  "订单": {
+    "aliases": [
+      "订单",
+      "order",
+      "orders",
+      "trade",
+      "交易",
+      "下单",
+      "销售单",
+      "商城订单",
+      "预约单",
+      "工单"
+    ]
+  },
+  "用户": {
+    "aliases": [
+      "用户",
+      "user",
+      "users",
+      "member",
+      "会员",
+      "客户",
+      "customer",
+      "account",
+      "账号"
+    ]
+  },
+  "支付": {
+    "aliases": [
+      "支付",
+      "pay",
+      "payment",
+      "payments",
+      "refund",
+      "退款",
+      "收款",
+      "结算",
+      "账单",
+      "billing"
+    ]
+  },
+  "优惠券": {
+    "aliases": [
+      "优惠券",
+      "coupon",
+      "voucher",
+      "折扣",
+      "促销",
+      "活动券",
+      "卡券"
+    ]
+  }
+}
