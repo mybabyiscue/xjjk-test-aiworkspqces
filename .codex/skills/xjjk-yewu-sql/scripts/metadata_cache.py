@@ -18,11 +18,10 @@ import pymysql
 
 
 SKILL_DIR = Path(__file__).resolve().parent.parent
-WORKSPACE_DIR = SKILL_DIR.parents[2]
 STATE_DIR = SKILL_DIR / "state"
 CACHE_DIR = STATE_DIR / "cache"
 DOCUMENT_DIR = STATE_DIR / "documents"
-CONNECTIONS_FILE = WORKSPACE_DIR / "config" / "connections.json"
+CONNECTIONS_FILE = STATE_DIR / "connections.json"
 DOMAIN_FILE = SKILL_DIR / "references" / "business_domains.json"
 DOCUMENT_JSON_FILE = DOCUMENT_DIR / "metadata_document.json"
 DOCUMENT_MD_FILE = DOCUMENT_DIR / "metadata_document.md"
@@ -30,7 +29,19 @@ SYSTEM_SCHEMAS = {"information_schema", "mysql", "performance_schema", "sys"}
 EXCLUDED_SCHEMA_PREFIXES = ("aigis", "aj", "bak")
 
 DEFAULT_CONNECTIONS = {
-    "connections": []
+    "connections": [
+        {
+            "name": "丝路测试",
+            "db_type": "mysql",
+            "jdbc": "jdbc:mysql://192.168.70.89:3306",
+            "host": "192.168.70.89",
+            "port": 3306,
+            "username": "silkroad",
+            "password": "83lchichucrodrl",
+            "enabled": True,
+            "notes": "初始登记连接",
+        }
+    ]
 }
 
 DEFAULT_DOMAINS = {

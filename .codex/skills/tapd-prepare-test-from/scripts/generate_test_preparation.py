@@ -74,7 +74,7 @@ def main():
     unit_mappings = parse_unit_test_mappings(unit_content)
     
     # Load environments
-    env_config_path = workspace_dir / "config" / "environments_config.json"
+    env_config_path = workspace_dir / "environments_config.json"
     env_config = load_json(env_config_path)
     db_config = env_config.get("database", {})
 
@@ -388,7 +388,7 @@ def main():
         "import pymysql",
         "",
         "# 1. 从配置文件动态读取鉴权 and 数据库连接配置，杜绝硬编码！",
-        "with open('config/environments_config.json', 'r', encoding='utf-8') as f:",
+        "with open('environments_config.json', 'r', encoding='utf-8') as f:",
         "    config = json.load(f)",
         "",
         "db_cfg = config.get('database', {})",
@@ -543,7 +543,7 @@ def main():
         "import pymysql",
         "",
         "# 1. 从配置文件动态读取鉴权 and 数据库连接配置，杜绝硬编码！",
-        "with open('config/environments_config.json', 'r', encoding='utf-8') as f:",
+        "with open('environments_config.json', 'r', encoding='utf-8') as f:",
         "    config = json.load(f)",
         "",
         "db_cfg = config.get('database', {})",

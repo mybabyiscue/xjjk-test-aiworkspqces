@@ -41,7 +41,7 @@ def main() -> int:
 def fetch_source(source: dict, cache_root: Path) -> None:
     source_type = source.get("source_type")
     if source_type == "git":
-        fetch_git(source, cache_root / source["resolved_name"])
+        fetch_git(source, cache_root / "repos" / source["url_hash"])
         return
     if source_type == "zip":
         fetch_zip(source, cache_root / "archives" / source["url_hash"])
@@ -58,9 +58,6 @@ def fetch_git(source: dict, target: Path) -> None:
         if target.exists():
             shutil.rmtree(target)
         run_git(["git", "clone", "--quiet", url, str(target)])
-    requested_branch = str(source.get("branch", "")).strip()
-    if requested_branch:
-        run_git(["git", "-C", str(target), "checkout", "--quiet", "-B", requested_branch, f"origin/{requested_branch}"])
     commit = run_git(["git", "-C", str(target), "rev-parse", "HEAD"]).strip()
     branch = run_git(["git", "-C", str(target), "rev-parse", "--abbrev-ref", "HEAD"]).strip()
     source.update({"cache_path": str(target), "commit": commit, "branch": branch, "fetch_status": "success", "error": ""})

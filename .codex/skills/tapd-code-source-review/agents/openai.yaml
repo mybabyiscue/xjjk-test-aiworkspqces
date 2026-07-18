@@ -1,4 +1,4 @@
 interface:
   display_name: "TAPD Code Source Review"
-  short_description: "作为一个代码拉取小助手，基于用户提供的一个或多个开发服务代码路径拉取代码分支，并在代码中审查解决需求疑问，必须提供有效的代码路径否则无法运行本技能"
+  short_description: "Fetch and gate code sources"
   default_prompt: "Prepare and review HTTP code sources before testcase code analysis."
