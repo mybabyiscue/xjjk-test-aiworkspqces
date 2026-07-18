@@ -1,0 +1,56 @@
+{
+  "source_run_id": "20260718_141450_code_source",
+  "previous_source_run_id": "",
+  "created_at": "2026-07-18 14:14:50",
+  "code_sources": [
+    {
+      "service_id": "course",
+      "input_url": "https://cnb.cool/xjjk/sharkcloud/services/course.git",
+      "source_type": "git",
+      "resolved_name": "course",
+      "branch": "feature-20260624-1060777",
+      "commit": "158623ed4332e55cc62ce58d5a17f4e166b044f0",
+      "cache_path": "output\\code_sources\\cache\\course",
+      "fetch_status": "success",
+      "url_hash": "2c2393ec6810043f",
+      "error": ""
+    },
+    {
+      "service_id": "operations",
+      "input_url": "https://cnb.cool/xjjk/sharkcloud/presentation/operations.git",
+      "source_type": "git",
+      "resolved_name": "operations",
+      "branch": "main",
+      "commit": "33e8d6a30d22439e812af0d1e1494f0c6fc4cc89",
+      "cache_path": "output\\code_sources\\cache\\operations",
+      "fetch_status": "success",
+      "url_hash": "3b38306afb012bff",
+      "error": ""
+    },
+    {
+      "service_id": "furnish",
+      "input_url": "https://cnb.cool/xjjk/sharkcloud/presentation/furnish.git",
+      "source_type": "git",
+      "resolved_name": "furnish",
+      "branch": "feature-20260624-1060777",
+      "commit": "68142bb30cf4c295e2e679325ffd0d3dd7412285",
+      "cache_path": "output\\code_sources\\cache\\furnish",
+      "fetch_status": "success",
+      "url_hash": "631f44931cb24dd1",
+      "error": ""
+    },
+    {
+      "service_id": "miniapp",
+      "input_url": "https://cnb.cool/xjjk/sharkcloud/presentation/miniapp.git",
+      "source_type": "git",
+      "resolved_name": "miniapp",
+      "branch": "feature-20260624-1060777",
+      "commit": "a5e9f63766a1bd820b51627c3e447c79c737803f",
+      "cache_path": "output\\code_sources\\cache\\miniapp",
+      "fetch_status": "success",
+      "url_hash": "e8e5deff4acbb97a",
+      "error": ""
+    }
+  ],
+  "errors": []
+}

@@ -1,150 +1,115 @@
 ---
 name: tapd-code-source-review
-description: 拉取并门禁审查代码源：根据用户提供的 Git/ZIP 地址与分支，拉取代码并完成用例代码审查前的准入校验。
+description: 作为一个代码拉取、疑问销号、业务多层审计与测试用例证据提取的一站式助手。包含基于测试用例的参数提取及过滤、平台数据库表元数据（/xjjk-yewu-sql）绑定，生成单元测试接口、核心流程接口与表信息 3 大定制文档，并负责测试用例最终审批与知识沉淀。
 ---
 
-# TAPD 代码源准备与审查
+# TAPD 代码源审查与测试用例证据分析 (重构合并版)
 
 ## 1. 核心角色与职责
 
-* **角色**：代码拉取小助手。
-* **强约束门禁**：本技能必须在启动时由用户提供至少一个或多个 `http://` 或 `https://` 的 Git 仓库或 ZIP 源码包路径，以及对应的分支。
-  * **未提供路径时判定**：如果输入参数没有代码路径，本技能必须**立即报错并停止运行**，不得执行后续的任何操作。
-  * **支持多仓库与分支输入格式**：支持以逗号、分号或空格分隔的多个“仓库URL+对应分支名称”解析。例如：
-    `https://cnb.cool/services/course.git#feature-20260624-1060777, https://cnb.cool/presentation/operations.git#feature-20260624-1060777`
-    或自然文本形式：
-    `https://cnb.cool/services/course/  feature-xxx分支， https://cnb.cool/presentation/operations/  feature-xxx分支`
-* **核心定位**：专职执行单/多源码仓库的拉取、缓存隔离、疑问销号审计、以及基于 PRD 需求的业务代码合规性审查。
+*   **角色**：代码拉取、疑问审计与用例证据闭环确认的超级助手。
+*   **强约束门禁**：本技能在启动时必须满足：
+    1.  **代码路径**：由用户提供至少一个或多个 `http://` 或 `https://` 的 Git 仓库或 ZIP 源码包路径，以及对应的分支（使用 `--code-url` 命令行参数）。如无代码路径，**立即报错并停止运行**。
+    2.  **前置用例**：本地工作区必须已生成结构化测试用例文档 `output/latest/test_cases.md`。如缺失，**立即报错熔断**。
+*   **核心定位**：专职执行单/多源码仓库的拉取隔离、疑问销号、基于用例关键字及物理平台元数据的库表与接口强过滤扫描、分类生成 3 大证据文档、用例最终确认以及经验知识库沉淀。
 
 ---
 
 ## 2. 职责范围与输入输出
 
-* **输入依赖**：
-  1. 用户提供的单/多个源码仓库路径及分支（`--code-url` 命令行参数）。
-  2. `output/requirement.md`（产品总监生成的结构化需求文档）。
-  3. `output/questions.md`（上一阶段遗留的需求疑问点与漏洞追踪清单）。
-  4. `output/review_history.md`（若存在，代表之前的迭代记录）。
-* **输出文件**：
-  1. `output/code_sources/runs/<source_run_id>/`（保存当前批次源码缓存与审查痕迹）。
-  2. `output/code_sources/latest/`（存放最新版本的源码配置文件及主审查报告）。
-  3. `output/code_sources/cache/<repo_name>/`：**多仓库隔离存放区**。将拉取到的多个服务源码分目录存放（如 `course/` 和 `operations/`），避免文件覆盖与命名冲突。
-  4. `output/code_sources/latest/code_review_report.md`：三层架构代码审查总报告。
-  5. `output/code_sources/latest/code_source_confirmation.json`：人工确认门禁状态描述。
-* **禁止事项**：
-  * 严禁修改拉取到的业务代码。
-  * 严禁在代码中硬编码访问令牌或密码，所有拉取所需的凭证必须从 `config/credentials.local.json` 或环境变量读取。
+*   **输入依赖**：
+    1.  用户提供的单/多个源码仓库路径及分支（`--code-url` 命令行参数）。
+    2.  `output/requirement.md`（结构化需求文档）。
+    3.  `output/questions.md`（需求疑问追踪清单）。
+    5.  `/xjjk-yewu-sql` 的缓存元数据文件 `state/documents/metadata_document.json` **[必须]**。
+    6.  微服务网关配置文件（如 `bootstrap.yml`, 网关模块 `.yml`）或前端 API 请求管理器 **[可选，若多微服务架构则推荐]**。
+*   **输出产物**：
+    1.  `output/code_sources/cache/<repo_name>/`（多仓库隔离代码缓存）。
+    2.  `output/code_review/runs/<review_run_id>/`（保存当前批次的代码审计及证据提取产物）。
+    3.  `output/code_review/latest/`（存放最新版本的分析结果报告）：
+        *   unit_test_interfaces.md：**单元测试与接口测试映射文档**（将每个结构化测试用例映射到真实的后端 API 接口，输出包含 DTO 请求体字段在内的详细参数说明，并单独归纳无法进行接口测试的纯前端/播放器交互测试点，用于开发单测和接口测试对齐）。
+        *   `core_process_interfaces.md`：**核心流程接口文档**（包含业务核心步骤说明，且已强过滤去除外部 Mock、Maven 及参数为“无”的辅助接口，仅列出真实后端含参数 API 与 DTO 递归属性）。
+        *   `table_information.md`：**表信息文档**（强关联测试用例，完全来自 `/xjjk-yewu-sql` 所选平台缓存元数据中得到的库名、表名、表物理注释与字段级别详情说明）。
+        *   `code_review_findings.md`：扫描出的硬编码/坏味道缺陷清单。
+        *   `issue_tracking.md`：代码缺陷闭环跟踪状态。
+        *   `incremental_plan.md`：增量/全量扫描计划。
+        *   `change_summary.md`：服务代码变更摘要。
+    4.  `output/latest/testcase_confirmation.json`：测试用例与证据最终确认门禁状态（在用户最终审批通过后生成）。
+    5.  工作区 `knowledge/EXP-xxx.md` 与 `knowledge/index.json`：测试经验模式沉淀（用户明确通过后生成）。
 
 ---
 
-## 3. 工作流程与控制门禁 (Workflow & Stop-Loss Gate)
+## 3. 工作流程与控制门禁
 
-本技能的运行流程遵循严格的逻辑控制。若前置门禁不通过，流程必须立刻中断挂起。
+本技能遵循严格的步骤与挂起门禁：
 
-### 第一步：前置校验与多库安全拉取 (Check & Multiple Fetch)
-1. **参数解析**：检查用户提供的 `--code-url`。通过正则提取出每一个 `(URL, 分支)` 键值对，若无任何有效路径，报错终止。
-2. **隔离克隆**：针对提取出的每个仓库：
-   - 提取其服务名称作为子文件夹名（例如 `course` 或 `operations`）。
-   - 在本地 `output/code_sources/cache/<repo_name>` 执行 `git clone -b <分支> --single-branch <URL>`。
-   - 若本地缓存已存在该服务文件夹，则安全执行 `git fetch && git checkout <分支> && git pull` 更新。
-3. **记录元数据**：在 `source_manifest.json` 中完整载入每个被激活仓库的服务名称、URL、分支以及对应的 Commit ID，并记录在 `code_fetch_result.md` 中。
+### 第一步：前置校验与拉取 (Check & Fetch)
+1.  **参数与文件校验**：检查是否有 `--code-url`。检查 `output/latest/test_cases.md` 是否存在。若不通过，报错中止。
+2.  **隔离克隆与网关路由侦测**：在 `output/code_sources/cache/<repo_name>/` 安全拉取并更新各个仓库代码。在 `source_manifest.json` 中载入每个仓库的服务名称、URL、分支及 Commit ID。
+        *   **网关前缀探测**：自动检索网关配置模块（如 `gateway`）或微服务的路由配置文件，解析出每个微服务绑定的**网关请求前缀**（如 `/course/mp`），并将其回写至 `source_manifest.json` 中的 `gateway_prefix` 字段。
 
-### 第二步：疑问销号与中断门禁 (Questions Resolution & Halt Gate)
-代码拉取成功后，智能体必须**优先解决 `output/questions.md` 中列出的悬案**：
-1. **跨仓库印证**：智能体遍历 `questions.md` 的所有条目，在已下载的 `output/code_sources/cache/` 下的所有服务目录中交叉检索寻找实现证据（例如在后端 `course` 中寻找 API 锁，在前端 `operations` 中寻找组件回弹）。
-2. **状态更新**：
-   * 如果在代码中找到了对应的安全逻辑或业务实现，则在该问题状态后标记 `[已解决 (代码层已实现，代码位置：[服务名]/filename.js#L10)]`（标记在 `code_review_report.md` 中，但不得改写原始 `questions.md`，保持历史记录纯洁）。
-   * 如果代码中确认逻辑确实不存在，或存在明显业务缺口与逻辑矛盾：标记为 `[待确认]` 或 `[疑似逻辑缺陷]`。
-3. **熔断判定 (Halt Gate)**：
-   * **如果存在任何无法在代码中闭环、代码逻辑缺失、或属于疑似Bug的问题**，本技能必须**立即中止运行（Halt）**。
-   * 在对话中将这些问题高亮打印出来呈报给用户，提示：
-     > “*检测到以下需求疑问在代码中无法解决（可能属于代码逻辑缺失或需求未对齐），流程已自动挂起：*
-     > * *[问题编号] - [问题名称] - [代码层扫描结果]*
-     > *请给出指示：A. 忽略此问题并继续；B. 研发已修复，我已更新代码，请重新拉取。*”
-   * 智能体必须在此静默等待用户的显式指令，在用户回复“继续”或“已更新”前，**绝对不允许**往下执行第三步。
+### 第二步：所属平台确认 (Platform Selector Gate)
+1.  **列出平台与微服务**：读取 `/xjjk-yewu-sql` 的 `metadata_document.json` 获取所有可用数据库连接。列出检测到的所有微服务。
+2.  **提问交互 (极简模式)**：在对话中提供清晰的选择题或选项提示用户：
+    *   **选项 A (推荐)**：所有服务共用同一个数据库连接（如“鲨域测试”）。
+    *   **选项 B (多分流)**：服务连接不同的数据库，由用户用自然语言告知映射关系（如“course用鲨域测试，member用丝路测试”）。
+3.  **自动更新 Manifest**：根据用户的对话反馈，AI 代理自动在后台解析并更新 `source_manifest.json` 中各个服务的 `platform` 属性，无需用户手动在命令行传入。后续表结构提取将严格以此绑定进行库表过滤。
 
-### 第三步：多层代码审查与对齐 (Multi-Layer Code Audit)
-当疑问销号门禁通过（所有问题已被代码印证，或用户确认可跳过）后，智能体结合 `requirement.md` 对源码展开多维度代码审查：
+### 第三步：疑问销号与中断门禁 (Questions Halt Gate)
+1.  优先遍历 `output/questions.md` 里的所有条目，在克隆出的代码目录下检索对应安全逻辑或业务实现证据。
+2.  **熔断判定**：如果存在任何代码逻辑缺失或疑似逻辑缺陷的问题，**必须立即中止运行（Halt）**，在对话中高亮打印这些问题，并等待用户给出指示（如 A. 忽略继续；B. 重新拉取）。在用户明确指示前，**绝对不允许**往下执行。
 
-#### 层级 1：业务逻辑与 BDD 规则印证 (Business BDD Alignment)
-* 读取 `requirement.md` 中各个 Story 下的 BDD 验收标准（Given-When-Then）。
-* 在源码中找出这些功能对应的 Controller、Service 或前端逻辑，验证开发的代码分支是否完全覆盖了 PRD 所约定的场景（如完播率结算、状态机流转等）。
+### 第四步：用例证据提取与三大文档生成 (Evidence Scan)
+疑问销号通过（或用户忽略）后，执行以下步骤：
+1.  **用例特征提取**：读取并解析 `test_cases.md` 得到用例步骤中的 URL、路径段与核心中英文业务词。
+2.  **执行扫描提取与路由拼接**：运行扫描脚本，将用户指定的 **平台名称** 和 **用例特征白名单** 作为过滤参数：
+        *   **强关联过滤**：抛弃任何与测试用例、核心需求无直接关系的其他模块接口与库表，确保接口与表“不要出现不符合本次需求的项目”。
+        *   **网关路由完整拼接**：解析出的控制器 API 路径必须**强制与第一步中侦测到的网关前缀（`gateway_prefix`）进行拼接**，形成用于测试的完整路径（例如，把 `@PostMapping("/live/goods/save")` 拼装为 `/course/mp/live/goods/save`），禁止漏掉网关前缀。
+        *   **接口请求方法（HTTP Method）的唯一判定标准**：必须且只能通过解析 Java 源代码中对应的 Spring Web 注解确定。**严禁根据接口路径包含 "delete", "save" 或业务意图主观推测 HTTP 方法。**
+            *   若注解为 `@GetMapping` -> 必须为 `GET`；
+            *   若注解为 `@PostMapping` -> 必须为 `POST`；
+            *   若注解为 `@PutMapping` -> 必须为 `PUT`；
+            *   若注解为 `@DeleteMapping` -> 必须为 `DELETE`；
+            *   若注解为 `@RequestMapping` -> 根据其 `method` 属性进行解析，如无则默认支持全部。
+        *   **公共必填 Header 提取**：扫描前端网络拦截器（如 `request.ts`, `http.js`），自动抓取鉴权之外的自定义必填头（例如 `sysType`）及动态签名规则，标注在接口文档的 Header 部分。
+        *   **接口参数详细解析**：对扫描到的接口，解析其参数位置（Query/Path/Body/Header）、必填状态、Swagger（@ApiParam/@Schema）或 Javadoc 中的 `@param` 描述。
+        *   **RequestBody DTO 展开**：如果参数是 `@RequestBody` 复杂对象，自动在代码库中定位其 DTO 类定义，将 DTO 的各个字段及描述作为子参数树状列出。
+ 3.  **生成 3 个文档**：分类写出 `unit_test_interfaces.md` (单测接口 - 使用拼接后的完整路由)、`core_process_interfaces.md` (生产核心接口 - 包含真实路由与必填 Headers，需在头部追加核心业务步骤，且强过滤去除无参数与Mock接口)、`table_information.md` (物理库表结构)。
+4.  **生成辅助文档**：同步输出 `incremental_plan.md`、`code_review_findings.md` 等缺陷文件。
 
-#### 层级 2：代码卫生与安全审计 (Security & Hygiene - 兼容 `agent-skills`)
-* 检查源码中是否包含硬编码的系统密码、API Token 或外部凭证。
-* 检查 SQL 语句（如 JPA, MyBatis XML, 裸 SQL）中是否存在 SQL 注入风险（必须参数化）。
-* 检查涉及敏感数据读取的接口是否进行了 SaaS Tenant 级别鉴权，防止越权跨租户访问。
+### 第五步：多层代码与设计质量审计 (Hygiene & Smells Audit)
+结合需求文档对源码进行“业务逻辑 BDD 验收对齐”、“安全卫生硬编码扫描”与“设计坏味道审计”，并在最终的主代码审查报告（`output/code_review/latest/code_review_report.md`）中进行归纳描述。
 
-#### 层级 3：设计质量与坏味道审计 (Design Quality & Smells - 兼容 `mattpocock/skills`)
-* 检查在关键业务路径（如进度结算比例、发红包限额）中是否使用了未定义的魔数（Magic Number），建议提取为常量。
-* 检查关键异步服务调用（如领奖发券、支付状态同步）是否包含可靠的 Try-Catch 捕获和日志记录。
-
-### 第四步：后续流程指引与用户交互提醒 (Post-Completion Reminder Gate)
-在完成所有多层代码审计并成功更新门禁状态为已批准（`approved: true`）后，智能体**必须在输出结束时，显式提示用户后续的可选分支，并询问以下决策**：
-1. **是否审批测试用例**：如果用户确认需求对齐与代码审查结论满意，提醒用户可启动测试用例审批与代码关联（推荐调用下游 `tapd-testcase-code-review` 技能）。
-2. **是否更新测试用例**：如果本次审计发现了代码实现与 PRD 需求的偏离或卡点，提醒用户是否需要对 `test_cases.md` 的范围进行追加/细化调整。
-* **交互示范**：
-  > “*代码审计已全部完成。代码源已获批准（approved: true）。根据当前的审计结论，请问您接下来需要执行什么操作？*
-  > * *[1] (推荐) 审批测试用例：直接进入用例代码证据关联阶段（启动 tapd-testcase-code-review）*
-  > * *[2] 更新测试用例：针对审计发现的业务缺口/带病卡点更新当前用例设计*
-  > *请回复对应序号或直接指示您的下一步动作。*”
+### 第六步：用例最终审批与知识库沉淀 (Approval & Knowledge Sink)
+1.  **展示审批摘要**：在对话中展示本次审计结果摘要、强关联的数据库表和 API 接口统计，并附上生成的三个定制文档的本地文件链接。
+2.  **申请最终审批**：暂停并显式提示用户对其进行审批确认。
+3.  **生成确认与沉淀**：只有在用户确认“通过”后，自动生成 `output/latest/testcase_confirmation.json`，并将满足可复用提取条件的测试模式沉淀至 `knowledge/` 下并更新 `knowledge/index.json`。
 
 ---
 
-## 4. 输出格式契约 (Output Contract)
+## 4. 推荐执行命令
 
-### 4.1 `code_review_report.md` 报告结构
-
-所有阶段完成后，在 `output/code_sources/latest/code_review_report.md` 输出中文报告，结构规范如下：
-
-```markdown
-# 鲨域专栏课多模块代码审计报告
-
-## 一、 需求疑问 (questions.md) 销号跟踪
-| 问题ID | 问题名称 | 状态 | 代码印证证据说明 / 人工干预备注 |
-|---|---|---|---|
-| Q001 | [名称] | 已解决 / 确认为缺陷 / 人工忽略 | 在 [[服务名] - 文件绝对路径#行号](file:///绝对路径#L行号) 处发现 [实现逻辑] |
-
-## 二、 业务逻辑合规度 (BDD 验收对齐)
-* **[BDD-001] [验收场景名称]**
-  - **合规度**：合规 / 存在缺口
-  - **代码证据**：[[服务名] - filename.js#L12](file:///path/to/file#L12)
-  - **审计描述**：开发代码逻辑与 PRD 第X章要求一致，完播百分比计算及状态机流转边界对齐。
-
-## 三、 代码卫生与安全审计 (兼容 agent-skills 规范)
-* **敏感令牌扫描**：[未见泄露 / 发现以下硬编码 Token]
-* **SQL 注入风险**：[未见注入风险 / 发现 MyBatis 中使用 $ 拼接，存在漏洞风险]
-* **SaaS 隔离与越权**：[已包含 tenant_id 安全过滤 / 发现越权缺陷]
-
-## 四、 架构合理性与坏味道审计 (兼容 mattpocock/skills 规范)
-* **魔数检查**：[合规 / 发现多处配置硬编码，建议提取]
-* **容错捕获与日志**：[异常调用包含合理try-catch及Logger记录 / 缺乏异常处理]
+### 4.1 初始化运行目录与门禁检查
+```bash
+python scripts/preflight_check.py --code-url <仓库URL#分支>
 ```
 
-### 4.2 `code_source_confirmation.json` 门禁描述
-
-初始被挂起时写入：
-```json
-{
-  "approved": false,
-  "reason": "存在待确认的未决需求问题，代码层无法闭环，流程已挂起等待人工指令。"
-}
+### 4.2 解析并提取用例
+```bash
+python scripts/parse_testcases.py --run-dir output/code_review/latest
 ```
 
-只有当所有未决问题被印证解决、或经由用户显式批准跳过，且审计完成后写入：
-```json
-{
-  "approved": true,
-  "reason": "代码源已就绪，疑问点已销号/人工确认忽略，多层代码审计已完成，允许进入测试用例代码证据分析。"
-}
+### 4.3 执行基于用例与平台强过滤的代码证据扫描
+```bash
+python scripts/review_code_evidence.py --run-dir output/code_review/latest --platform "<用户确认的平台名称>"
 ```
 
 ---
 
 ## 5. 完成定义
-
-* 已执行多仓库参数解析并隔离克隆/拉取代码缓存。
-* 已对比 `questions.md` 并在多服务代码目录中为问题销号；若有代码层不可闭环的问题，已执行流程中止并呈报用户。
-* 门禁通过后，已基于 `requirement.md` 对源码进行业务 BDD 逻辑、安全卫生、以及代码坏味道三层审计。
-* 已输出详细的中文 `code_review_report.md` 并更新 `code_source_confirmation.json` 状态。
-* **已输出下一步流转选项提醒，询问用户是否审批或更新测试用例。**
+*   已正确执行多仓库拉取及疑问销号，无代码层不可闭环问题阻断。
+*   已交互确认数据库平台名称。
+*   已基于用例端点和核心词实现双重强关联过滤，无任何非本次需求相关的接口与库表泄露。
+*   已深度抓取了接口参数明细并展开了 RequestBody DTO 字段属性。
+*   已成功生成 **单元测试接口文档**、**核心流程接口文档**、**表信息文档**。
+*   用户最终审批通过后，已生成用例确认 `testcase_confirmation.json` 并完成 `knowledge/` 沉淀。

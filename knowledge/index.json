@@ -1,0 +1,17 @@
+{
+  "last_updated": "2026-07-10",
+  "entries": [
+    {
+      "id": "EXP-001",
+      "keywords": ["表单", "必填", "格式校验", "字长限制", "排序值"],
+      "file_path": "knowledge/EXP-001_standard_form.md",
+      "summary": "包含管理后台常见的表单边界值校验（如必填报错、大/小于边界拦截、文本超长）原子测试点设计。"
+    },
+    {
+      "id": "EXP-002",
+      "keywords": ["视频播放", "播放设置", "快进", "暂停", "续播"],
+      "file_path": "knowledge/EXP-002_standard_player.md",
+      "summary": "流媒体控制策略（快进拦截回弹、允许暂停切换、随机暂停触发、续播定位）测试点设计。"
+    }
+  ]
+}
