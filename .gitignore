@@ -6,15 +6,6 @@ config/connections.json
 .env.*
 !.env.example
 
-# Generated workflow artifacts
-output/*
-!output/README.md
-scratch/*
-!scratch/README.md
-
-# Retrieved code caches
-output/code_sources/cache/
-output/code_sources/runs/
 
 # Database metadata state
 .codex/skills/xjjk-yewu-sql/state/connections.json
