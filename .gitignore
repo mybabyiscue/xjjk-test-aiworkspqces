@@ -26,7 +26,9 @@ allure-results/
 allure-report/
 
 # Output and temp files
-output/code_review/
-output/code_sources/
-scratch/
+output/*
+!output/README.md
+scratch/*
+!scratch/.gitkeep
+*.log
 
