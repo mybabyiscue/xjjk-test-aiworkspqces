@@ -24,3 +24,9 @@ __pycache__/
 .playwright/
 allure-results/
 allure-report/
+
+# Output and temp files
+output/code_review/
+output/code_sources/
+scratch/
+

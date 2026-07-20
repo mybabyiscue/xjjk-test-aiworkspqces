@@ -1,5 +1,5 @@
 {
-  "last_updated": "2026-07-10",
+  "last_updated": "2026-07-18",
   "entries": [
     {
       "id": "EXP-001",
@@ -12,6 +12,18 @@
       "keywords": ["视频播放", "播放设置", "快进", "暂停", "续播"],
       "file_path": "knowledge/EXP-002_standard_player.md",
       "summary": "流媒体控制策略（快进拦截回弹、允许暂停切换、随机暂停触发、续播定位）测试点设计。"
+    },
+    {
+      "id": "EXP-003",
+      "keywords": ["奖励", "幂等", "并发领取", "状态机", "下游流水"],
+      "file_path": "knowledge/EXP-003_reward_idempotency.md",
+      "summary": "奖励资格校验、唯一键防重、处理中/成功/失败状态流转和外部到账核对模式。"
+    },
+    {
+      "id": "EXP-004",
+      "keywords": ["学习进度", "匿名进度", "单调合并", "断网重试", "完播状态"],
+      "file_path": "knowledge/EXP-004_progress_monotonic_merge.md",
+      "summary": "本地与服务端播放秒数取高、完成状态不降级及同步失败保留重试模式。"
     }
   ]
 }

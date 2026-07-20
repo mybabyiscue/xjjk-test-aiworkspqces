@@ -23,9 +23,16 @@ def main() -> int:
     snapshot: dict[str, object] = read_json_object(Path(arguments.snapshot))
     cases: list[dict[str, object]] = load_cases(Path(arguments.tapd_cases))
     errors: list[str] = validation_errors(assessment, cases, snapshot)
+    interface_groups: object = assessment.get("interface_cases", [])
+    interface_case_count: int = sum(
+        len(group.get("covered_case_keys", []))
+        for group in interface_groups
+        if isinstance(group, dict) and isinstance(group.get("covered_case_keys"), list)
+    ) if isinstance(interface_groups, list) else 0
     report: dict[str, object] = {
         "input_case_count": len(cases),
-        "interface_case_count": len(assessment.get("interface_cases", [])) if isinstance(assessment.get("interface_cases"), list) else 0,
+        "interface_group_count": len(interface_groups) if isinstance(interface_groups, list) else 0,
+        "interface_case_count": interface_case_count,
         "non_interface_case_count": len(assessment.get("non_interface_cases", [])) if isinstance(assessment.get("non_interface_cases"), list) else 0,
         "core_flow_count": len(assessment.get("core_flows", [])) if isinstance(assessment.get("core_flows"), list) else 0,
         "valid": not errors,

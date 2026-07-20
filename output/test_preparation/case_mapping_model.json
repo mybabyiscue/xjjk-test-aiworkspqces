@@ -1,0 +1,275 @@
+{
+  "model_version": "2026-07-18",
+  "interface_groups": [
+    {
+      "interface_key": "admin_save",
+      "interface_evidence": {"service": "course", "controller_file": "SpecialColumnAdminController.java", "controller_method": "save", "http_method": "POST", "path": "/course/mp/column/admin/save"},
+      "headers": {"Authorization": "${authorization}", "sysType": "1", "token": "${dynamic_signature}"},
+      "query_reference": "QRY_SPECIAL_COLUMN_CHAPTER",
+      "database_fields": ["id", "columnId", "courseId"],
+      "database_assertions": ["Verify the target special_column, special_column_course, or special_column_chapter row and tenant ownership after the request."],
+      "cleanup_steps": ["Delete only records created by this testcase after recording their generated IDs."],
+      "cases": [
+        {"case_index": 1, "variant_type": "positive", "request_body": {"type": "COLUMN", "name": "接口准备专栏", "description": "接口准备数据", "status": 0}},
+        {"case_index": 2, "variant_type": "positive", "request_body": {"type": "COURSE", "columnId": 12, "title": "接口准备课程", "lecturerName": "测试讲师", "status": 0}},
+        {"case_index": 3, "variant_type": "positive", "request_body": {"type": "CHAPTER", "courseId": 28, "title": "接口准备章节", "sort": 93, "status": 0}},
+        {"case_index": 26, "variant_type": "negative", "validation_evidence": ["Rich-text sanitization or rejection must be observable in response and persisted detail."], "request_body": {"type": "COURSE", "id": 28, "columnId": 12, "title": "gxx课程--第五讲", "detail": "<script>alert(1)</script><a href=\"javascript:alert(1)\">x</a>"}},
+        {"case_index": 30, "variant_type": "positive", "request_body": {"type": "COLUMN", "id": 12, "name": "gxx专栏课-编辑验证", "status": 1}},
+        {"case_index": 36, "variant_type": "positive", "request_body": {"type": "COURSE", "id": 28, "columnId": 12, "title": "gxx课程--第五讲-编辑验证", "status": 1}},
+        {"case_index": 62, "variant_type": "positive", "request_body": {"type": "CHAPTER", "id": 74, "courseId": 28, "title": "第五讲第七课无奖励-内容更新", "sort": 94, "status": 1}}
+      ]
+    },
+    {
+      "interface_key": "admin_query",
+      "interface_evidence": {"service": "course", "controller_file": "SpecialColumnAdminController.java", "controller_method": "query", "http_method": "POST", "path": "/course/mp/column/admin/query"},
+      "headers": {"Authorization": "${authorization}", "sysType": "1", "token": "${dynamic_signature}"},
+      "query_reference": "QRY_SPECIAL_COLUMN",
+      "database_fields": ["columnId", "courseId"],
+      "database_assertions": ["Returned IDs must match the current tenant and all supplied filters."],
+      "cleanup_steps": [],
+      "cases": [
+        {"case_index": 24, "variant_type": "negative", "validation_evidence": ["Column 14 belongs to tenant 174 while the selected tenant context is 153."], "request_body": {"type": "COLUMN", "columnId": 14, "pageNum": 1, "pageSize": 20}},
+        {"case_index": 29, "variant_type": "positive", "request_body": {"type": "COLUMN", "keyword": "gxx专栏课", "pageNum": 1, "pageSize": 20}},
+        {"case_index": 33, "variant_type": "positive", "request_body": {"type": "COURSE", "columnId": 12, "pageNum": 1, "pageSize": 20}},
+        {"case_index": 34, "variant_type": "positive", "request_body": {"type": "COURSE", "columnId": 12, "courseName": "第五讲", "status": 1, "lecturerName": "", "pageNum": 1, "pageSize": 20}},
+        {"case_index": 63, "variant_type": "positive", "request_body": {"type": "CHAPTER", "courseId": 28, "pageNum": 1, "pageSize": 100}}
+      ]
+    },
+    {
+      "interface_key": "admin_delete",
+      "interface_evidence": {"service": "course", "controller_file": "SpecialColumnAdminController.java", "controller_method": "delete", "http_method": "POST", "path": "/course/mp/column/admin/delete"},
+      "headers": {"Authorization": "${authorization}", "sysType": "1", "token": "${dynamic_signature}"},
+      "query_reference": "QRY_SPECIAL_COLUMN_CHAPTER",
+      "database_fields": ["id"],
+      "database_assertions": ["The target row is soft-deleted and no row outside the target hierarchy changes."],
+      "cleanup_steps": ["Use disposable records only; do not restore soft-deleted production-like rows manually."],
+      "cases": [
+        {"case_index": 32, "variant_type": "positive", "request_body": {"type": "COLUMN", "id": 3}},
+        {"case_index": 39, "variant_type": "positive", "request_body": {"type": "COURSE", "id": 8}},
+        {"case_index": 42, "variant_type": "positive", "request_body": {"type": "CHAPTER", "id": 74}}
+      ]
+    },
+    {
+      "interface_key": "admin_status",
+      "interface_evidence": {"service": "course", "controller_file": "SpecialColumnAdminController.java", "controller_method": "status", "http_method": "POST", "path": "/course/mp/column/admin/status"},
+      "headers": {"Authorization": "${authorization}", "sysType": "1", "token": "${dynamic_signature}"},
+      "query_reference": "QRY_SPECIAL_COLUMN_COURSE",
+      "database_fields": ["id"],
+      "database_assertions": ["The requested status is persisted only when service validation succeeds."],
+      "cleanup_steps": ["Restore the original status captured during setup."],
+      "cases": [
+        {"case_index": 27, "variant_type": "negative", "validation_evidence": ["Course 8 has no published chapter in the extracted chapter dataset."], "request_body": {"type": "COURSE", "id": 8, "status": 1}},
+        {"case_index": 40, "variant_type": "positive", "request_body": {"type": "COURSE", "id": 28, "status": 0}},
+        {"case_index": 43, "variant_type": "positive", "request_body": {"type": "CHAPTER", "id": 74, "status": 0}}
+      ]
+    },
+    {
+      "interface_key": "chapter_sort",
+      "interface_evidence": {"service": "course", "controller_file": "SpecialColumnAdminController.java", "controller_method": "chapterSort", "http_method": "POST", "path": "/course/mp/column/admin/chapter/sort"},
+      "headers": {"Authorization": "${authorization}", "sysType": "1", "token": "${dynamic_signature}"},
+      "query_reference": "QRY_SPECIAL_COLUMN_CHAPTER",
+      "database_fields": ["chapterId"],
+      "database_assertions": ["special_column_chapter.sort changes only for the target chapter on accepted requests."],
+      "cleanup_steps": ["Restore chapter 74 sort to 94."],
+      "cases": [
+        {"case_index": 44, "variant_type": "positive", "request_body": {"chapterId": 74, "sort": 93}},
+        {"case_index": 67, "variant_type": "negative", "validation_evidence": ["Sort must be a positive integer."], "request_body": {"chapterId": 74, "sort": 0}},
+        {"case_index": 68, "variant_type": "negative", "validation_evidence": ["Sort must be a positive integer."], "request_body": {"chapterId": 74, "sort": -1}}
+      ]
+    },
+    {
+      "interface_key": "admin_config",
+      "interface_evidence": {"service": "course", "controller_file": "SpecialColumnAdminController.java", "controller_method": "config", "http_method": "POST", "path": "/course/mp/column/admin/config"},
+      "headers": {"Authorization": "${authorization}", "sysType": "1", "token": "${dynamic_signature}"},
+      "query_reference": "QRY_SPECIAL_COLUMN_QUESTION",
+      "database_fields": ["chapterId"],
+      "database_assertions": ["Accepted question configuration is persisted in special_column_chapter_question; rejected payloads leave it unchanged."],
+      "cleanup_steps": ["Restore the original chapter 74 question JSON after boundary validation."],
+      "cases": [
+        {"case_index": 22, "variant_type": "negative", "validation_evidence": ["Execute with a real operator account lacking reward-policy permission."], "request_body": {"configType": "CHAPTER_REWARD", "chapterId": 74, "enabled": true, "rewardType": 1, "rewardConfig": {"value": 10, "pointActivityId": 100000425}}},
+        {"case_index": 23, "variant_type": "negative", "validation_evidence": ["Execute with a real operator account lacking play-policy permission."], "request_body": {"configType": "CHAPTER_PLAY", "chapterId": 74, "useDefault": false, "showProgressBar": true, "allowManualPause": true, "allowFastForward": true, "completePercent": 100}},
+        {"case_index": 70, "variant_type": "positive", "request_body": {"configType": "CHAPTER_QUESTION", "chapterId": 74, "questionJson": [{"questionId": 1, "question": "题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题", "options": ["11", "22"], "answer": ["11"]}]}},
+        {"case_index": 71, "variant_type": "negative", "validation_evidence": ["Question text exceeds the 100-character contract by one character."], "request_body": {"configType": "CHAPTER_QUESTION", "chapterId": 74, "questionJson": [{"questionId": 1, "question": "题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题题", "options": ["11", "22"], "answer": ["11"]}]}},
+        {"case_index": 72, "variant_type": "positive", "request_body": {"configType": "CHAPTER_QUESTION", "chapterId": 74, "questionJson": [{"questionId": 1, "question": "边界选项", "options": ["选选选选选选选选选选选选选选选选选选选选选选选选选选选选选选选选选选选选选选选选选选选选选选选选选选", "22"], "answer": ["22"]}]}},
+        {"case_index": 73, "variant_type": "negative", "validation_evidence": ["Option text exceeds the 50-character contract by one character."], "request_body": {"configType": "CHAPTER_QUESTION", "chapterId": 74, "questionJson": [{"questionId": 1, "question": "边界选项", "options": ["选选选选选选选选选选选选选选选选选选选选选选选选选选选选选选选选选选选选选选选选选选选选选选选选选选选", "22"], "answer": ["22"]}]}},
+        {"case_index": 74, "variant_type": "positive", "request_body": {"configType": "CHAPTER_QUESTION", "chapterId": 74, "questionJson": [{"questionId": 1, "question": "答案描述边界", "options": ["11", "22"], "answer": ["11"], "answerDescription": "描描描描描描描描描描描描描描描描描描描描描描描描描描描描描描描描描描描描描描描描描描描描描描描描描描"}]}},
+        {"case_index": 75, "variant_type": "negative", "validation_evidence": ["Answer description exceeds the 50-character contract by one character."], "request_body": {"configType": "CHAPTER_QUESTION", "chapterId": 74, "questionJson": [{"questionId": 1, "question": "答案描述边界", "options": ["11", "22"], "answer": ["11"], "answerDescription": "描描描描描描描描描描描描描描描描描描描描描描描描描描描描描描描描描描描描描描描描描描描描描描描描描描描"}]}}
+      ]
+    },
+    {
+      "interface_key": "admin_course_detail",
+      "interface_evidence": {"service": "course", "controller_file": "SpecialColumnAdminController.java", "controller_method": "courseDetail", "http_method": "POST", "path": "/course/mp/column/admin/course/detail"},
+      "headers": {"Authorization": "${authorization}", "sysType": "1", "token": "${dynamic_signature}"},
+      "query_reference": "QRY_SPECIAL_COLUMN_COURSE",
+      "database_fields": ["id"],
+      "database_assertions": ["The response course fields correspond to special_column_course.id 28 and do not expose client-only introduction content."],
+      "cleanup_steps": [],
+      "cases": [{"case_index": 64, "variant_type": "positive", "request_body": {"id": 28}}]
+    },
+    {
+      "interface_key": "client_detail",
+      "interface_evidence": {"service": "course", "controller_file": "SpecialColumnClientController.java", "controller_method": "detail", "http_method": "POST", "path": "/course/mp/column/client/detail"},
+      "headers": {"authorization": "${authorization}", "token": "${dynamic_signature}"},
+      "query_reference": "QRY_SPECIAL_COLUMN_CHAPTER",
+      "database_fields": ["courseId", "chapterId"],
+      "database_assertions": ["Response aggregation matches course 28, chapter 74, its effective play setting, question and reward rows."],
+      "cleanup_steps": [],
+      "cases": [
+        {"case_index": 8, "variant_type": "positive", "request_body": {"courseId": 28, "chapterId": 74}},
+        {"case_index": 69, "variant_type": "positive", "request_body": {"courseId": 28, "chapterId": 74}}
+      ]
+    },
+    {
+      "interface_key": "progress_sync",
+      "interface_evidence": {"service": "course", "controller_file": "SpecialColumnClientController.java", "controller_method": "progress", "http_method": "POST", "path": "/course/mp/column/chapter/progress"},
+      "headers": {"authorization": "${authorization}", "token": "${dynamic_signature}"},
+      "query_reference": "QRY_SPECIAL_COLUMN_USER_PROGRESS",
+      "database_fields": ["chapterId", "userId"],
+      "database_assertions": ["special_column_user_progress remains monotonic and complete_status never regresses from 1 to 0."],
+      "cleanup_steps": ["Use the selected test user and capture the original progress row before mutation."],
+      "cases": [
+        {"case_index": 6, "variant_type": "positive", "request_body": {"userId": 1000000389008, "chapterId": 74, "currentSeconds": 22, "durationSeconds": 22, "completeStatus": 1}},
+        {"case_index": 19, "variant_type": "positive", "request_body": {"userId": 1000000389008, "chapterId": 74, "currentSeconds": 22, "durationSeconds": 22, "completeStatus": 1, "localProgressList": [{"chapterId": 74, "currentSeconds": 22, "durationSeconds": 22, "completeStatus": 1, "lastPlayTime": "2026-07-16 17:53:47"}]}},
+        {"case_index": 20, "variant_type": "positive", "request_body": {"userId": 1000000389008, "chapterId": 74, "currentSeconds": 10, "durationSeconds": 22, "completeStatus": 0, "localProgressList": [{"chapterId": 74, "currentSeconds": 10, "durationSeconds": 22, "completeStatus": 0, "lastPlayTime": "2026-07-16 17:53:47"}]}}
+      ]
+    },
+    {
+      "interface_key": "answer_submit",
+      "interface_evidence": {"service": "course", "controller_file": "SpecialColumnClientController.java", "controller_method": "submitAnswer", "http_method": "POST", "path": "/course/mp/column/answer/submit"},
+      "headers": {"authorization": "${authorization}", "token": "${dynamic_signature}"},
+      "query_reference": "QRY_SPECIAL_COLUMN_QUESTION",
+      "database_fields": ["chapterId"],
+      "database_assertions": ["A submission record is created with the expected pass_status and answer JSON for the authenticated user."],
+      "cleanup_steps": ["Retain answer records only when the execution plan explicitly permits controlled test writes."],
+      "cases": [
+        {"case_index": 7, "variant_type": "positive", "request_body": {"chapterId": 74, "answers": [{"questionId": 1, "selectedOptions": ["11"]}]}},
+        {"case_index": 51, "variant_type": "negative", "validation_evidence": ["Question 1 correct option is 11; option 22 is a real but incorrect option."], "request_body": {"chapterId": 74, "answers": [{"questionId": 1, "selectedOptions": ["22"]}]}}
+      ]
+    },
+    {
+      "interface_key": "reward_receive",
+      "interface_evidence": {"service": "course", "controller_file": "SpecialColumnClientController.java", "controller_method": "receiveReward", "http_method": "POST", "path": "/course/mp/column/reward/receive"},
+      "headers": {"authorization": "${authorization}", "token": "${dynamic_signature}"},
+      "query_reference": "QRY_SPECIAL_COLUMN_CHAPTER_REWARD",
+      "database_fields": ["chapterId", "rewardConfigId"],
+      "database_assertions": ["At most one special_column_user_reward_record exists per user and reward configuration; downstream settlement matches reward type."],
+      "cleanup_steps": ["Do not delete financial or settlement records; use a dedicated controlled test user for execution."],
+      "cases": [
+        {"case_index": 9, "variant_type": "positive", "request_body": {"chapterId": 74, "rewardConfigId": 281, "platform": 1}},
+        {"case_index": 10, "variant_type": "positive", "request_body": {"chapterId": 66, "rewardConfigId": 279, "platform": 1}},
+        {"case_index": 12, "variant_type": "positive", "request_body": {"chapterId": 74, "rewardConfigId": 281, "platform": 1}},
+        {"case_index": 13, "variant_type": "positive", "request_body": {"chapterId": 74, "rewardConfigId": 281, "platform": 1}},
+        {"case_index": 15, "variant_type": "negative", "validation_evidence": ["Execute only with the real points service configured to return an explicit failure for the controlled activity."], "request_body": {"chapterId": 65, "rewardConfigId": 278, "platform": 1}},
+        {"case_index": 16, "variant_type": "negative", "validation_evidence": ["Execute only with the real coupon service configured to return an explicit failure for the controlled coupon."], "request_body": {"chapterId": 66, "rewardConfigId": 279, "platform": 1}},
+        {"case_index": 18, "variant_type": "negative", "validation_evidence": ["The user must not have a passing answer record for the selected chapter at request time."], "request_body": {"chapterId": 74, "rewardConfigId": 281, "platform": 1}}
+      ]
+    },
+    {
+      "interface_key": "reward_result",
+      "interface_evidence": {"service": "course", "controller_file": "SpecialColumnClientController.java", "controller_method": "rewardResult", "http_method": "POST", "path": "/course/mp/column/reward/receive/result"},
+      "headers": {"authorization": "${authorization}", "token": "${dynamic_signature}"},
+      "query_reference": "QRY_SPECIAL_COLUMN_USER_REWARD",
+      "database_fields": ["recordId"],
+      "database_assertions": ["The referenced reward record reaches the expected terminal state without creating a second reward record."],
+      "cleanup_steps": ["Do not rewrite historical settlement rows outside a dedicated execution fixture."],
+      "cases": [
+        {"case_index": 11, "variant_type": "positive", "request_body": {"recordId": 3920, "receiveStatus": 1}},
+        {"case_index": 14, "variant_type": "positive", "request_body": {"recordId": 3930, "receiveStatus": 2, "failReason": "下游请求超时，结果待核对"}, "response_assertions": ["The receive workflow preserves a queryable record and does not create a duplicate settlement request."]},
+        {"case_index": 17, "variant_type": "negative", "validation_evidence": ["Record 3930 is a real failed red-packet reward record."], "request_body": {"recordId": 3930, "receiveStatus": 2, "failReason": "红包转账失败"}}
+      ]
+    },
+    {
+      "interface_key": "furnish_source",
+      "interface_evidence": {"service": "course", "controller_file": "SpecialColumnAdminController.java", "controller_method": "furnishSource", "http_method": "POST", "path": "/course/mp/column/furnish/source"},
+      "headers": {"authorization": "${authorization}", "token": "${dynamic_signature}"},
+      "query_reference": "QRY_SPECIAL_COLUMN_COURSE",
+      "database_fields": ["columnId"],
+      "database_assertions": ["Every returned course belongs to column 12 and has status 1 and is_deleted 0."],
+      "cleanup_steps": [],
+      "cases": [{"case_index": 52, "variant_type": "positive", "request_body": {"columnId": 12, "keyword": "", "pageNum": 1, "pageSize": 20}}]
+    },
+    {
+      "interface_key": "share_resolve",
+      "interface_evidence": {"service": "course", "controller_file": "SpecialColumnPublicController.java", "controller_method": "resolve", "http_method": "GET", "path": "/course/mp/column/share/resolve"},
+      "headers": {"token": "${dynamic_signature}"},
+      "query_reference": "QRY_SPECIAL_COLUMN_CHAPTER",
+      "database_fields": ["targetId"],
+      "database_assertions": ["Resolved resources must be published, not deleted, and tenant-visible; invalid historical links return no playable resource."],
+      "cleanup_steps": [],
+      "cases": [
+        {"case_index": 45, "variant_type": "positive", "request_body": {"targetType": "CHAPTER", "targetId": 74, "source": "operations"}},
+        {"case_index": 55, "variant_type": "positive", "request_body": {"targetType": "COURSE", "targetId": 28, "source": "miniapp"}},
+        {"case_index": 56, "variant_type": "positive", "request_body": {"targetType": "CHAPTER", "targetId": 74, "source": "miniapp"}},
+        {"case_index": 65, "variant_type": "negative", "validation_evidence": ["Set the disposable resource to status 0 before resolving its historical link."], "request_body": {"targetType": "CHAPTER", "targetId": 74, "source": "miniapp"}},
+        {"case_index": 66, "variant_type": "negative", "validation_evidence": ["Soft-delete a disposable resource before resolving its historical link."], "request_body": {"targetType": "CHAPTER", "targetId": 74, "source": "miniapp"}}
+      ]
+    }
+  ],
+  "non_interface_case_indexes": [4, 5, 21, 25, 28, 31, 35, 37, 38, 41, 46, 47, 48, 49, 50, 53, 54, 57, 58, 59, 60, 61, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90],
+  "blocked_case_indexes": [25],
+  "core_flows": [
+    {
+      "flow_key": "learn_answer_reward_close_loop",
+      "name": "课程详情到完播、答题、领奖及结果闭环",
+      "case_indexes": [6, 7, 8, 9, 11, 12, 18, 20],
+      "evidence_references": ["output/code_review/latest/core_process_interfaces.md", "output/code_review/latest/table_information.md", "output/test_preparation/real_data_records.json"],
+      "steps": [
+        {
+          "interface_evidence": {"service": "course", "controller_file": "SpecialColumnClientController.java", "controller_method": "detail", "http_method": "POST", "path": "/course/mp/column/client/detail"},
+          "headers": {"authorization": "${authorization}", "token": "${dynamic_signature}"},
+          "query_reference": "QRY_SPECIAL_COLUMN_CHAPTER",
+          "request_body": {"courseId": 28, "chapterId": 74},
+          "parameter_dependencies": ["Course 28 and chapter 74 form a real published parent-child pair."],
+          "response_assertions": ["Gateway code is 00000 and the response contains chapter 74 with effective play, question and reward configuration."],
+          "database_assertions": ["Course 28 and chapter 74 remain published and not deleted."],
+          "interrupt_condition": "Stop when the chapter is unavailable or its configuration aggregation is incomplete.",
+          "cleanup_steps": []
+        },
+        {
+          "interface_evidence": {"service": "course", "controller_file": "SpecialColumnClientController.java", "controller_method": "progress", "http_method": "POST", "path": "/course/mp/column/chapter/progress"},
+          "headers": {"authorization": "${authorization}", "token": "${dynamic_signature}"},
+          "query_reference": "QRY_SPECIAL_COLUMN_USER_PROGRESS",
+          "request_body": {"userId": 1000000389008, "chapterId": 74, "currentSeconds": 22, "durationSeconds": 22, "completeStatus": 1},
+          "parameter_dependencies": ["Use the same authenticated user and chapter returned by step 1."],
+          "response_assertions": ["Gateway code is 00000 and the effective chapter completion state is 1."],
+          "database_assertions": ["The user progress row for chapter 74 is 22/22 and complete_status is 1."],
+          "interrupt_condition": "Stop when completion is not persisted or regresses.",
+          "cleanup_steps": []
+        },
+        {
+          "interface_evidence": {"service": "course", "controller_file": "SpecialColumnClientController.java", "controller_method": "submitAnswer", "http_method": "POST", "path": "/course/mp/column/answer/submit"},
+          "headers": {"authorization": "${authorization}", "token": "${dynamic_signature}"},
+          "query_reference": "QRY_SPECIAL_COLUMN_QUESTION",
+          "request_body": {"chapterId": 74, "answers": [{"questionId": 1, "selectedOptions": ["11"]}]},
+          "parameter_dependencies": ["Step 2 must report chapter 74 complete before answer submission.", "Question 1 and option 11 come from the real question configuration."],
+          "response_assertions": ["Gateway code is 00000 and pass status is true."],
+          "database_assertions": ["A passing answer record exists for the authenticated user and chapter 74."],
+          "interrupt_condition": "Stop when the answer is not accepted or pass status is false.",
+          "cleanup_steps": []
+        },
+        {
+          "interface_evidence": {"service": "course", "controller_file": "SpecialColumnClientController.java", "controller_method": "receiveReward", "http_method": "POST", "path": "/course/mp/column/reward/receive"},
+          "headers": {"authorization": "${authorization}", "token": "${dynamic_signature}"},
+          "query_reference": "QRY_SPECIAL_COLUMN_CHAPTER_REWARD",
+          "request_body": {"chapterId": 74, "rewardConfigId": 281, "platform": 1},
+          "parameter_dependencies": ["Step 2 completion and step 3 passing answer are mandatory.", "Reward configuration 281 belongs to chapter 74."],
+          "response_assertions": ["Gateway code is 00000 and a single reward record ID is returned."],
+          "database_assertions": ["Exactly one reward record is bound to the authenticated user and reward configuration 281."],
+          "interrupt_condition": "Stop when qualification is rejected or more than one reward record is created.",
+          "cleanup_steps": []
+        },
+        {
+          "interface_evidence": {"service": "course", "controller_file": "SpecialColumnClientController.java", "controller_method": "rewardResult", "http_method": "POST", "path": "/course/mp/column/reward/receive/result"},
+          "headers": {"authorization": "${authorization}", "token": "${dynamic_signature}"},
+          "query_reference": "QRY_SPECIAL_COLUMN_USER_REWARD",
+          "request_body": {"recordId": 3925, "receiveStatus": 1},
+          "parameter_dependencies": ["Use the reward record ID returned by step 4; record 3925 is the verified real-data example."],
+          "response_assertions": ["Gateway code is 00000 and receive status is successful."],
+          "database_assertions": ["The same reward record reaches receive_status 1 without a duplicate record."],
+          "interrupt_condition": "Stop when the callback targets another record or creates a duplicate settlement.",
+          "cleanup_steps": []
+        }
+      ]
+    }
+  ]
+}
