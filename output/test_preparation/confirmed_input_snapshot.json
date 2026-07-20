@@ -1,0 +1,21 @@
+{
+  "testcase_confirmation": {
+    "testcase_hash": "73054de20a83b9ec79edd8d120334dbe93dd1338e819c19b7946d55fda0dd32a",
+    "code_review_run_id": "20260718_165826_code_review",
+    "approved_at": "2026-07-18"
+  },
+  "input_hashes": {
+    "test_cases": "73054de20a83b9ec79edd8d120334dbe93dd1338e819c19b7946d55fda0dd32a",
+    "tapd_cases": "1aa32e0701986e62f83c8829fcb5d4195b030dc6cdd6b49fd2b3d920a1274cd3",
+    "related_interfaces": "f9e73a2b3e825c36f74b6fd761978cf27355eabc6ea69c3c8738e53fe928e034",
+    "related_tables": "a189192099f8c6bcc93834713d74e9569b7a0b6f2057965bce91028a36387f0a",
+    "interface_evidence": "1e05770f556adb22edace51b2d243360b80eede15bd5fd55f4ab31b116d44ff6",
+    "table_evidence": "a189192099f8c6bcc93834713d74e9569b7a0b6f2057965bce91028a36387f0a",
+    "code_evidence": "170864c1dd61b8accf37d8592d9dbdfe1d87265411cc2b8619b5f6701ff80143"
+  },
+  "environment": {
+    "name": "鲨域租户端,miniapp",
+    "api_domain": "https://api.test.njxjjt.com/"
+  },
+  "generated_at": "2026-07-18T09:39:22.921565+00:00"
+}

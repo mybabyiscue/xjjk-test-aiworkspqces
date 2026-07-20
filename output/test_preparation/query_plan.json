@@ -1,0 +1,82 @@
+{
+  "connection": "鲨域测试",
+  "queries": [
+    {
+      "query_reference": "QRY_SPECIAL_COLUMN",
+      "database": "mall4cloud_saas_scrm",
+      "table": "special_column",
+      "purpose": "专栏新增、查询、编辑、删除与租户隔离用例",
+      "sql": "SELECT * FROM mall4cloud_saas_scrm.special_column WHERE is_deleted = 0 ORDER BY status DESC, update_time DESC LIMIT 20"
+    },
+    {
+      "query_reference": "QRY_SPECIAL_COLUMN_COURSE",
+      "database": "mall4cloud_saas_scrm",
+      "table": "special_column_course",
+      "purpose": "课程管理、装修数据源、分享与可见性用例",
+      "sql": "SELECT * FROM mall4cloud_saas_scrm.special_column_course WHERE is_deleted = 0 ORDER BY status DESC, update_time DESC LIMIT 50"
+    },
+    {
+      "query_reference": "QRY_SPECIAL_COLUMN_CHAPTER",
+      "database": "mall4cloud_saas_scrm",
+      "table": "special_column_chapter",
+      "purpose": "章节管理、排序、播放、奖励开关和分享用例",
+      "sql": "SELECT * FROM mall4cloud_saas_scrm.special_column_chapter WHERE is_deleted = 0 ORDER BY status DESC, update_time DESC LIMIT 100"
+    },
+    {
+      "query_reference": "QRY_SPECIAL_COLUMN_PLAY_SETTING",
+      "database": "mall4cloud_saas_scrm",
+      "table": "special_column_play_setting",
+      "purpose": "租户默认播放策略用例",
+      "sql": "SELECT * FROM mall4cloud_saas_scrm.special_column_play_setting WHERE is_deleted = 0 ORDER BY update_time DESC LIMIT 20"
+    },
+    {
+      "query_reference": "QRY_SPECIAL_COLUMN_DEFAULT_REWARD",
+      "database": "mall4cloud_saas_scrm",
+      "table": "special_column_default_reward_setting",
+      "purpose": "默认奖励配置用例",
+      "sql": "SELECT * FROM mall4cloud_saas_scrm.special_column_default_reward_setting WHERE is_deleted = 0 ORDER BY enabled DESC, update_time DESC LIMIT 20"
+    },
+    {
+      "query_reference": "QRY_SPECIAL_COLUMN_CHAPTER_PLAY",
+      "database": "mall4cloud_saas_scrm",
+      "table": "special_column_chapter_play_setting",
+      "purpose": "章节默认与自定义播放策略用例",
+      "sql": "SELECT * FROM mall4cloud_saas_scrm.special_column_chapter_play_setting WHERE is_deleted = 0 ORDER BY update_time DESC LIMIT 50"
+    },
+    {
+      "query_reference": "QRY_SPECIAL_COLUMN_QUESTION",
+      "database": "mall4cloud_saas_scrm",
+      "table": "special_column_chapter_question",
+      "purpose": "完播答题、重试和字段边界用例",
+      "sql": "SELECT * FROM mall4cloud_saas_scrm.special_column_chapter_question WHERE is_deleted = 0 ORDER BY update_time DESC LIMIT 50"
+    },
+    {
+      "query_reference": "QRY_SPECIAL_COLUMN_CHAPTER_REWARD",
+      "database": "mall4cloud_saas_scrm",
+      "table": "special_column_chapter_reward",
+      "purpose": "章节积分、优惠券和红包奖励用例",
+      "sql": "SELECT * FROM mall4cloud_saas_scrm.special_column_chapter_reward WHERE is_deleted = 0 ORDER BY enabled DESC, update_time DESC LIMIT 50"
+    },
+    {
+      "query_reference": "QRY_SPECIAL_COLUMN_USER_PROGRESS",
+      "database": "mall4cloud_saas_scrm",
+      "table": "special_column_user_progress",
+      "purpose": "进度同步、完播和续播用例",
+      "sql": "SELECT * FROM mall4cloud_saas_scrm.special_column_user_progress WHERE is_deleted = 0 ORDER BY complete_status DESC, update_time DESC LIMIT 50"
+    },
+    {
+      "query_reference": "QRY_SPECIAL_COLUMN_USER_ANSWER",
+      "database": "mall4cloud_saas_scrm",
+      "table": "special_column_user_answer_record",
+      "purpose": "答题通过与失败记录用例",
+      "sql": "SELECT * FROM mall4cloud_saas_scrm.special_column_user_answer_record WHERE is_deleted = 0 ORDER BY submit_time DESC LIMIT 50"
+    },
+    {
+      "query_reference": "QRY_SPECIAL_COLUMN_USER_REWARD",
+      "database": "mall4cloud_saas_scrm",
+      "table": "special_column_user_reward_record",
+      "purpose": "奖励幂等、处理中、成功、失败和下游流水用例",
+      "sql": "SELECT * FROM mall4cloud_saas_scrm.special_column_user_reward_record WHERE is_deleted = 0 ORDER BY receive_status, update_time DESC LIMIT 50"
+    }
+  ]
+}

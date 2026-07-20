@@ -30,6 +30,10 @@ def redact_headers(headers: dict[str, object]) -> dict[str, object]:
     }
 
 
+def join_url(api_domain: object, path: object) -> str:
+    return f"{str(api_domain).rstrip('/')}/{str(path).lstrip('/')}"
+
+
 def bullet_lines(value: object) -> list[str]:
     if not isinstance(value, list) or not value:
         return ["- 无"]
@@ -79,7 +83,7 @@ def render_interface_document(assessment: dict[str, object], snapshot: dict[str,
     for raw_interface in require_list(assessment.get("interface_cases"), "interface_cases"):
         interface: dict[str, object] = require_object(raw_interface, "interface_case")
         evidence: dict[str, object] = require_object(interface.get("interface_evidence"), "interface_evidence")
-        lines.extend([f"## {interface['interface_key']}", f"- 覆盖用例：{', '.join(interface['covered_case_keys'])}", f"- 服务：{evidence['service']}", f"- Controller：{evidence['controller_file']}#{evidence['controller_method']}", f"- HTTP Method：{evidence['http_method']}", f"- 请求 URL：{environment['api_domain']}{evidence['path']}", ""])
+        lines.extend([f"## {interface['interface_key']}", f"- 覆盖用例：{', '.join(interface['covered_case_keys'])}", f"- 服务：{evidence['service']}", f"- Controller：{evidence['controller_file']}#{evidence['controller_method']}", f"- HTTP Method：{evidence['http_method']}", f"- 请求 URL：{join_url(environment['api_domain'], evidence['path'])}", ""])
         for index, raw_variant in enumerate(require_list(interface.get("request_variants"), "request_variants"), start=1):
             variant: dict[str, object] = require_object(raw_variant, "request_variant")
             headers: dict[str, object] = require_object(variant.get("headers"), "headers")
@@ -107,7 +111,7 @@ def render_non_interface_document(assessment: dict[str, object], snapshot: dict[
 
 def render_flow_document(assessment: dict[str, object], snapshot: dict[str, object]) -> str:
     confirmation: dict[str, object] = require_object(snapshot.get("testcase_confirmation"), "snapshot.testcase_confirmation")
-    lines: list[str] = ["# 核心流程接口详细文档", "", f"- 测试用例哈希：{confirmation['testcase_hash']}", f"- 代码复审批次：{confirmation['code_review_run_id']}", ""]
+    lines: list[str] = ["# 集成测试主流程指南", "", f"- 测试用例哈希：{confirmation['testcase_hash']}", f"- 代码复审批次：{confirmation['code_review_run_id']}", ""]
     flows: list[object] = require_list(assessment.get("core_flows"), "core_flows")
     if not flows:
         lines.extend(["## 未形成可验证核心流程", "", f"- 原因：{assessment['core_flow_blocker_reason'] or '未提供依赖证据。'}", ""])
@@ -131,7 +135,7 @@ def main() -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "interface_test_preparation.md").write_text(render_interface_document(assessment, snapshot), encoding="utf-8", newline="\n")
     (output_dir / "non_interface_cases.md").write_text(render_non_interface_document(assessment, snapshot), encoding="utf-8", newline="\n")
-    (output_dir / "core_flow_interface_details.md").write_text(render_flow_document(assessment, snapshot), encoding="utf-8", newline="\n")
+    (output_dir / "integration_test_flow.md").write_text(render_flow_document(assessment, snapshot), encoding="utf-8", newline="\n")
     print("已渲染三份接口测试准备文档。")
     return 0
 

@@ -1,0 +1,9 @@
+{
+  "input_case_count": 90,
+  "interface_group_count": 14,
+  "interface_case_count": 53,
+  "non_interface_case_count": 37,
+  "core_flow_count": 1,
+  "valid": true,
+  "errors": []
+}
