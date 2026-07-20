@@ -15,6 +15,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Create tapd-code-source-review preflight outputs.")
     parser.add_argument("--code-url", action="append", required=True, help="HTTP/HTTPS code URL. Repeat for multiple services.")
     parser.add_argument("--output-root", default="output/code_sources", help="Output root for code source runs.")
+    parser.add_argument("--platform", action="append", help="Service name to platform mapping, e.g., course=鲨域测试")
     args = parser.parse_args()
 
     output_root = Path(args.output_root)
@@ -28,14 +29,23 @@ def main() -> int:
     raw_dir = run_dir / "raw"
     raw_dir.mkdir(parents=True, exist_ok=False)
 
+    platform_map = {}
+    if args.platform:
+        for p in args.platform:
+            if "=" in p:
+                sname, pname = p.split("=", 1)
+                platform_map[sname.strip().lower()] = pname.strip()
+
     previous_run_id = read_previous_run_id(latest_dir)
     sources = []
     errors = []
     for index, url in enumerate(args.code_url, start=1):
-        normalized, branch = normalize_git_url(url)
-        service_id = resolve_name(normalized) or f"service_{index:03d}"
+        normalized = url.strip()
+        service_id = f"service_{index:03d}"
         parsed = urlparse(normalized)
         source_type = detect_source_type(normalized)
+        resolved_name = resolve_name(normalized)
+        platform = platform_map.get(resolved_name.lower(), "")
         error = ""
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             error = "代码路径必须是有效的 HTTP/HTTPS URL。"
@@ -45,13 +55,14 @@ def main() -> int:
                 "service_id": service_id,
                 "input_url": normalized,
                 "source_type": source_type,
-                "resolved_name": resolve_name(normalized),
-                "branch": branch,
+                "resolved_name": resolved_name,
+                "branch": "",
                 "commit": "",
                 "cache_path": "",
                 "fetch_status": "pending" if not error else "failed",
                 "url_hash": hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16],
                 "error": error,
+                "platform": platform,
             }
         )
 
@@ -85,17 +96,6 @@ def detect_source_type(url: str) -> str:
     if lower.endswith(".zip"):
         return "zip"
     return "unknown"
-
-
-def normalize_git_url(raw_url: str) -> tuple[str, str]:
-    url = raw_url.strip()
-    parsed = urlparse(url)
-    marker = "/-/tree/"
-    if marker not in parsed.path:
-        return url, ""
-    repository_path, branch = parsed.path.split(marker, 1)
-    repository_url = parsed._replace(path=f"{repository_path}.git", params="", query="", fragment="").geturl()
-    return repository_url, branch.strip("/")
 
 
 def resolve_name(url: str) -> str:

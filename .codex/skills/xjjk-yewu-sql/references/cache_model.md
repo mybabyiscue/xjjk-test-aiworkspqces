@@ -11,7 +11,7 @@ Schemas whose names start with `aigis`, `aj`, or `bak` are also excluded.
 
 ## Files
 
-- `config/connections.json`: registered MySQL connections
+- `state/connections.json`: registered MySQL connections
   Each connection may also define `focus_schemas` to keep only specific business schemas in the combined document.
   Each connection may also define `focus_schema_prefixes` to keep schemas by prefix in the combined document.
 - `state/cache/<connection>.json`: raw cache for one connection

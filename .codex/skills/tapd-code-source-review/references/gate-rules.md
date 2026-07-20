@@ -1,0 +1,53 @@
+# 输入门禁规则
+
+## 必要输入
+
+执行本技能前，必须能够读取以下文件：
+
+- `output/latest/test_cases.md`
+- `output/code_sources/latest/source_manifest.json`
+- `output/code_sources/latest/code_source_confirmation.json`
+
+## 必要确认状态
+
+必须同时满足：
+
+- `code_source_confirmation.json.approved = true`
+
+测试用例的最终确认发生在本技能完成代码证据复查之后，因此 `testcase_confirmation.json` 不是本技能的输入门禁。代码源确认状态不是 `true` 时，必须立即停止。
+
+当代码源未通过确认时，必须明确提示：
+
+```text
+代码源准备阶段尚未人工确认，禁止进入测试用例代码证据分析。
+```
+
+## 服务路径检查
+
+对 `source_manifest.json` 中每个 `fetch_status = success` 的服务，必须检查：
+
+- `cache_path` 是否存在。
+- 路径是否可读。
+- 是否至少能识别出一个可扫描目录。
+
+如果服务获取失败或缓存路径不可读，不允许静默跳过，必须记入 `input_check.md` 和后续索引文件。
+
+## 门禁失败输出
+
+门禁失败时必须输出 `input_check.md`，至少包含：
+
+- 检查时间。
+- 失败阶段。
+- 缺失项或失败项。
+- 原始异常或阻塞信息。
+- 建议处理方式。
+
+## 不允许的绕过方式
+
+- 不允许手工伪造 `code_source_confirmation.json.approved = true` 继续执行。
+- 不允许通过预先写入 `testcase_confirmation.json.approved = true` 跳过本技能的最终人工审批。
+- 不允许在缺少 `test_cases.md` 时仅靠 `tapd_cases.json` 继续执行。
+- 不允许在缺少 `source_manifest.json` 时直接扫描缓存目录。
+- 不允许跳过 `AGENTS.md` 读取。
+- 绝不允许在审计与分析阶段以任何理由对业务源码文件（包括 Java, Vue, JS, TS, XML, SQL 等）进行任何的写入、覆写或修改操作。发现代码或注释等任何层面的不一致，必须作为缺陷（Findings）在报告中记录，绝不允许直接在代码中做出订正。
+

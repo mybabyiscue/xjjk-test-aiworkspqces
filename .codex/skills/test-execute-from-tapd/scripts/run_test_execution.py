@@ -45,7 +45,7 @@ def handle_token_expired(env_name, env_file_path):
             if updated:
                 with open(env_file_path, "w", encoding="utf-8") as f:
                     json.dump(config, f, ensure_ascii=False, indent=2)
-                print(f"成功将新 Token 回填写入 config/environments_config.json 中的 【{env_name}】。")
+                print(f"成功将新 Token 回填写入 environments_config.json 中的 【{env_name}】。")
                 return True
     except (EOFError, Exception):
         pass
@@ -127,7 +127,7 @@ def main():
     
     prep_file = output_dir / "interface_test_preparation.md"
     flow_file = output_dir / "integration_test_flow.md"
-    env_file = workspace_dir / "config" / "environments_config.json"
+    env_file = workspace_dir / "environments_config.json"
     
     # 1. Preflight Check
     if not (prep_file.exists() and flow_file.exists() and env_file.exists()):

@@ -13,7 +13,7 @@ description: 执行由 /tapd-prepare-test-from 准备的接口测试用例与集
 
 ## 2. 前置输入
 
-- **配置参数**：`config/environments_config.json`
+- **配置参数**：`environments_config.json`
 - **接口测试手册**：`output/interface_test_preparation.md`
 - **集成流脚本骨架**：`output/integration_test_flow.md`
 
@@ -28,14 +28,14 @@ description: 执行由 /tapd-prepare-test-from 准备的接口测试用例与集
 解析时占位符不是合法 JSON，不能直接 `json.loads()` 请求体原文，必须先把 `{{ ... }}` 里的表达式单独提取出来求值，再拼回请求体。占位符统一按以下规则识别：
 
 - `DB.<表名>.<字段名>`：来自"测试数据准备"章节登记的反查结果。
-- `ENV.<路径>`：来自 `config/environments_config.json`。
+- `ENV.<路径>`：来自 `environments_config.json`。
 - `上一步 [步骤N] 返回的 <字段路径>`：来自集成流程中前一步 of 真实响应。
 - `INVALID_<NAME>`：反向用例的构造值，占位符里可能带括号注释（例如 `INVALID_ID (e.g. 999999)`），解析时只取 `INVALID_ID` 作为变量名，括号内容当成人读提示，不参与匹配，但要在报告里保留原文方便核对。
 
 解析完成后做一次自检，产出"解析与一致性检查"清单，包含以下几类问题，任何一类命中都不能直接放行执行，要单独列出来：
 
 - **格式解析失败**：参数表、请求体缺失或格式不符合预期，无法提取出完整用例。
-- **变量来源缺失**：请求体或参数表里出现的变量（`DB.*`、`ENV.*`、`INVALID_*`），在"测试数据准备"章节或 `config/environments_config.json` 里找不到对应的登记条目。这种变量不能凭表名字面意思猜一个查询方式去补，必须原样标记为缺失。
+- **变量来源缺失**：请求体或参数表里出现的变量（`DB.*`、`ENV.*`、`INVALID_*`），在"测试数据准备"章节或 `environments_config.json` 里找不到对应的登记条目。这种变量不能凭表名字面意思猜一个查询方式去补，必须原样标记为缺失。
 - **文档内部矛盾**：同一用例里，参数映射表/请求体用变量表示某参数，但 URL 或请求体其他位置对同一参数写了具体字面值（比如参数表说 `id` 来自 `{{ DB.special_column.id }}`，但请求 URL 却写死 `?id=1`）。这种情况以参数映射表为准还是以字面值为准无法自动判断，必须标记为"待确认"，不能默认选一个跑。
 - **骨架脚本与参数表不一致**：`integration_test_flow.md` 或手册第 5 节的示例脚本里，某个变量的取数表（查哪张表、哪个字段）和该用例在第 4 节参数映射表里登记的来源不一致。骨架脚本只是执行辅助参考，不是真值来源；出现不一致时，以逐用例的参数映射表为准，并在报告里注明骨架脚本需要同步修正。
 - **重复覆盖**：多个 Case ID 解析出的接口、方法、请求体完全相同（哪怕用例标题描述的业务场景不同）。这种情况实际执行时只发一次真实请求，避免重复调用测试环境，但报告里要把合并的 Case ID 全部列出来，并标注"业务场景未通过参数区分，需要人工补充差异化数据"，不能按用例数分别计入通过率把问题掩盖掉。
@@ -44,7 +44,7 @@ description: 执行由 /tapd-prepare-test-from 准备的接口测试用例与集
 
 ### 3.2 测试驱动构建
 
-- 在 `scratch/test_runner.py` 生成执行脚本，脚本里禁止硬编码任何主键、Token 或域名，这些一律从 `config/environments_config.json` 或数据库动态查询获取。
+- 在 `scratch/test_runner.py` 生成执行脚本，脚本里禁止硬编码任何主键、Token 或域名，这些一律从 `environments_config.json` 或数据库动态查询获取。
 - 变量解析逻辑按 3.1 节的规则统一实现为一个独立的占位符解析函数，不要为每个用例各写一段特例代码；查询用的 SQL 以手册"测试数据准备"章节登记的语句为准，不要自己另编查询条件。
 - 必须包含从数据库动态提取可用主键和答案的逻辑，取数方式（连接、查询条件）需要能在报告里追溯到手册里对应的登记条目。
 
@@ -84,13 +84,13 @@ description: 执行由 /tapd-prepare-test-from 准备的接口测试用例与集
 1. **终端交互（交互式环境）**：
    - 在终端打印明显的 `[TOKEN_EXPIRED_ERROR]` 旗标及所属环境名称。
    - 调用命令行输入（如 Python `input()`），提示用户：“检测到环境【环境名】的 Token 已失效，请输入新的 Token 回填（或 Enter 跳过并退出）：”。
-   - 若用户输入了新 Token，自动将新 Token 回填并写入 `config/environments_config.json` 的对应环境项下，返回成功标记。
+   - 若用户输入了新 Token，自动将新 Token 回填并写入 `environments_config.json` 的对应环境项下，返回成功标记。
 2. **静默退出（非交互式/后台任务）**：
    - 若在非交互式终端中捕获到 `EOFError`（如 IDE 自动化执行后台任务），引擎必须打印 `[TOKEN_EXPIRED_ERROR] <环境名>` 并**以特定的退出码（例如 `Exit Code 10`）立即退出**。
-   - AI 代理（Agent）捕获到该退出码后，必须**在聊天对话框中直接暂停，向用户索要新 Token**。收到后，代理使用写文件工具将 Token 更新至 `config/environments_config.json`。
+   - AI 代理（Agent）捕获到该退出码后，必须**在聊天对话框中直接暂停，向用户索要新 Token**。收到后，代理使用写文件工具将 Token 更新至 `environments_config.json`。
 
 #### 3.6.3 原地更新与自动重试 (Update & Inline Retry)
-- **原地更新**：在回填新 Token 后，执行引擎应在内存中**重新加载最新的 `config/environments_config.json` 变量**，并用新 Token 动态替换掉后续请求（及当前失败请求）的 `Authorization` 头部信息。
+- **原地更新**：在回填新 Token 后，执行引擎应在内存中**重新加载最新的 `environments_config.json` 变量**，并用新 Token 动态替换掉后续请求（及当前失败请求）的 `Authorization` 头部信息。
 - **自动重试**：引擎对当前导致中断的接口直接发起**原地重试（最大重试次数为 2 次）**。如果重试成功，测试继续向下执行，整个测试流无需从头全部重新运行，保障了测试的连续性与效率。
 
 ### 3.7 租户自适应判定与决策 (Tenant Auto-detection & Fallback Decision)

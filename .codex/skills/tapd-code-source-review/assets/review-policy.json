@@ -1,0 +1,82 @@
+{
+  "source_scan": {
+    "extensions": [".java", ".kt", ".xml", ".sql", ".js", ".ts", ".tsx", ".vue", ".go", ".py", ".php"],
+    "primary_source_extensions": [".java"],
+    "excluded_directories": [".git", ".codex", ".idea", ".vscode", "node_modules", "target", "build", "dist", "docs", "openspec", "__pycache__", ".pytest_cache"],
+    "max_file_bytes": 1048576
+  },
+  "source_fetch": {
+    "allowed_url_schemes": ["http", "https"],
+    "tree_path_marker": "/-/tree/",
+    "repository_suffix": ".git",
+    "source_type_suffixes": {".git": "git", ".zip": "zip"},
+    "generated_service_prefix": "service",
+    "unknown_source_name": "unknown-source"
+  },
+  "prepare_scan": {
+    "max_evidence_characters": 240,
+    "redaction_pattern": "(?i)(password|passwd|pwd|token|secret|access[_-]?key)(\\s*[:=]\\s*)['\\\"][^'\\\"]+['\\\"]",
+    "redaction_replacement": "\\1\\2\\\"***\\\"",
+    "rules": [
+      {"priority": "P1", "title": "疑似敏感信息硬编码", "pattern": "(?i)(password|passwd|pwd|token|secret|access[_-]?key)\\s*[:=]\\s*['\\\"][^'\\\"]{6,}"},
+      {"priority": "P2", "title": "存在 TODO/FIXME/临时代码", "pattern": "(?i)\\b(todo|fixme|临时|temporary|debug)\\b"},
+      {"priority": "P1", "title": "疑似拼接 SQL", "pattern": "(?i)(select|update|delete|insert)\\s+.+\\+.+"},
+      {"priority": "P2", "title": "疑似敏感日志输出", "pattern": "(?i)(log\\.|logger\\.|console\\.log).*(password|token|secret|authorization)"}
+    ]
+  },
+  "testcase_parsing": {
+    "case_heading_pattern": "(?m)^#{2,4}\\s+(TC[-_]?\\d+)\\s*(.*)$",
+    "route_literal_pattern": "(?<![\\w])/(?:[A-Za-z0-9_{}.-]+/)*[A-Za-z0-9_{}.-]+"
+  },
+  "interface_detection": {
+    "frontend_route_pattern": "(?P<symbol>[A-Za-z_$][\\w$]*)?\\s*[:=]\\s*['\\\"](?P<route>/[^'\\\"]+)['\\\"]",
+    "http_mapping_annotations": ["GetMapping", "PostMapping", "PutMapping", "DeleteMapping", "PatchMapping", "RequestMapping"],
+    "http_annotation_methods": {"GetMapping": "GET", "PostMapping": "POST", "PutMapping": "PUT", "DeleteMapping": "DELETE", "PatchMapping": "PATCH", "RequestMapping": "FROM_ARGUMENTS"},
+    "class_mapping_annotations": ["RequestMapping"],
+    "request_method_pattern": "RequestMethod\\.(GET|POST|PUT|DELETE|PATCH)",
+    "method_declaration_pattern": "(?s)\\b(?:public|protected|private)\\s+([\\w<>?,.\\[\\] ]+)\\s+(\\w+)\\s*\\((.*?)\\)\\s*\\{",
+    "table_annotation_pattern": "@Table(?:Name)?\\(\\s*['\\\"]([^'\\\"]+)['\\\"]\\s*\\)",
+    "controller_filename_markers": ["Controller"],
+    "listener_annotations": ["@KafkaListener", "@Scheduled", "@XxlJob", "@RocketMQMessageListener"],
+    "validation_annotations": ["NotNull", "NotBlank", "NotEmpty"],
+    "excluded_route_segments": ["/pages/", "/assets/", "/images/"],
+    "dependency_type_suffixes": ["Mapper", "Dao", "Repository", "Client", "Feign"],
+    "persistence_type_suffixes": ["Mapper", "Dao", "Repository"],
+    "implementation_suffixes": ["Impl"],
+    "method_declaration_search_characters": 1200,
+    "class_mapping_search_characters": 600,
+    "entity_reference_pattern": "\\b([A-Z]\\w+Entity)\\b",
+    "class_declaration_pattern": "\\b(?:class|interface)\\s+(\\w+)",
+    "dto_field_pattern": "\\bprivate\\s+([\\w<>?,.\\[\\] ]+)\\s+(\\w+)\\s*;",
+    "injected_field_pattern": "\\bprivate(?:\\s+final)?\\s+(\\w+)\\s+(\\w+)\\s*;",
+    "generic_type_pattern": "([A-Z]\\w+)(?:<|$)",
+    "javadoc_pattern": "(?s)/\\*\\*.*?\\*/",
+    "response_wrapper_prefixes": ["ServerResponseEntity"],
+    "tenant_filter_fields": ["tenant_id"]
+  },
+  "case_matching": {
+    "minimum_score": 6,
+    "max_inferred_cases_per_entry": 5,
+    "minimum_token_document_frequency": 2,
+    "maximum_token_document_frequency_ratio": 0.3333333333333333,
+    "maximum_chinese_ngram_length": 6,
+    "minimum_chinese_ngram_length": 2,
+    "minimum_scored_token_length": 4,
+    "identifier_minimum_length": 3,
+    "long_token_length": 5,
+    "short_token_weight": 2,
+    "long_token_weight": 3,
+    "generic_tokens": ["test", "case", "request", "response", "controller", "service", "mapper", "entity", "admin", "client", "public", "detail", "query", "save", "delete", "status", "config", "data", "page", "接口", "测试", "结果", "功能", "系统", "页面", "用户", "管理", "客户端", "服务端", "成功", "失败", "操作", "正常"]
+  },
+  "table_analysis": {
+    "sql_operations": ["select", "insert", "update", "delete"],
+    "max_sql_table_distance_characters": 200,
+    "max_report_fields": 10,
+    "sql_template_grades": ["A", "B"],
+    "operation_fallback_label": "ORM",
+    "unresolved_schema_label": "未知库"
+  },
+  "unit_test_detection": {
+    "test_path_segments": ["src/test", "src\\test"]
+  }
+}
