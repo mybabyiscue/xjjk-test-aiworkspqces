@@ -10,12 +10,16 @@ import urllib.request
 import zipfile
 from pathlib import Path
 
+from codegraph_support import assert_codegraph_environment, prepare_codegraph_index
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Fetch code sources for tapd-code-source-review.")
     parser.add_argument("--manifest", required=True, help="Path to source_manifest.json.")
     parser.add_argument("--output-root", default="output/code_sources", help="Output root for cache directories.")
     args = parser.parse_args()
+
+    codegraph_environment = assert_codegraph_environment()
 
     manifest_path = Path(args.manifest)
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -31,11 +35,24 @@ def main() -> int:
             source["error"] = str(exc)
             errors.append(f"{source.get('service_id')}: {exc}")
 
+    if errors:
+        manifest["errors"] = list(dict.fromkeys([*manifest.get("errors", []), *errors]))
+        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8", newline="\n")
+        write_fetch_result(manifest_path.parent / "code_fetch_result.md", manifest)
+        sync_latest_if_run_dir(manifest_path)
+        return 1
+
+    for source in manifest.get("code_sources", []):
+        cache_path = Path(str(source.get("cache_path", "")).strip())
+        index_result = prepare_codegraph_index(codegraph_environment, cache_path)
+        source["codegraph_action"] = index_result.action
+        source["codegraph_status"] = "healthy"
+
     manifest["errors"] = list(dict.fromkeys([*manifest.get("errors", []), *errors]))
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8", newline="\n")
     write_fetch_result(manifest_path.parent / "code_fetch_result.md", manifest)
     sync_latest_if_run_dir(manifest_path)
-    return 1 if errors else 0
+    return 0
 
 
 def fetch_source(source: dict, cache_root: Path) -> None:

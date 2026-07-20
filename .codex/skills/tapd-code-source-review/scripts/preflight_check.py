@@ -10,6 +10,8 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
 
+from codegraph_support import assert_codegraph_environment
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Create tapd-code-source-review preflight outputs.")
@@ -17,6 +19,8 @@ def main() -> int:
     parser.add_argument("--output-root", default="output/code_sources", help="Output root for code source runs.")
     parser.add_argument("--platform", action="append", help="Service name to platform mapping, e.g., course=鲨域测试")
     args = parser.parse_args()
+
+    assert_codegraph_environment()
 
     output_root = Path(args.output_root)
     runs_dir = output_root / "runs"
