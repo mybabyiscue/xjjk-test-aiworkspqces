@@ -12,6 +12,13 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
+from codegraph_support import (
+    CodeGraphEnvironment,
+    assert_codegraph_environment,
+    prepare_codegraph_index,
+    run_codegraph_json,
+)
+
 EXCLUDED_DIRS = {".git", "node_modules", "target", "build", "dist", ".idea", ".vscode", "__pycache__", ".pytest_cache"}
 TEXT_EXTENSIONS = {
     ".java", ".kt", ".xml", ".properties", ".yml", ".yaml", ".json", ".js", ".ts", ".tsx", ".py", ".go", ".php",
@@ -860,59 +867,24 @@ def sync_latest_if_run_dir(run_dir: Path) -> None:
     shutil.copytree(run_dir, latest_dir)
 
 
-def init_codegraph_index(root: Path) -> bool:
-    try:
-        subprocess.run(
-            ["codegraph", "init", str(root)],
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False
-        )
-        completed = subprocess.run(
-            ["codegraph", "index", str(root)],
-            capture_output=True,
-            text=True,
-            timeout=90,
-            check=False
-        )
-        return completed.returncode == 0
-    except Exception:
-        return False
+def get_symbol_callers(
+    environment: CodeGraphEnvironment,
+    root: Path,
+    symbol: str,
+) -> list[dict[str, Any]]:
+    data = run_codegraph_json(environment, ["callers", "-p", str(root), "-j", symbol], root, 30)
+    callers = data.get("callers")
+    return [item for item in callers if isinstance(item, dict)] if isinstance(callers, list) else []
 
 
-def get_symbol_callers(root: Path, symbol: str) -> list[dict[str, Any]]:
-    try:
-        completed = subprocess.run(
-            ["codegraph", "callers", "-p", str(root), "-j", symbol],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False
-        )
-        if completed.returncode == 0:
-            data = json.loads(completed.stdout)
-            return data.get("callers") or []
-    except Exception:
-        pass
-    return []
-
-
-def get_symbol_callees(root: Path, symbol: str) -> list[dict[str, Any]]:
-    try:
-        completed = subprocess.run(
-            ["codegraph", "callees", "-p", str(root), "-j", symbol],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False
-        )
-        if completed.returncode == 0:
-            data = json.loads(completed.stdout)
-            return data.get("callees") or []
-    except Exception:
-        pass
-    return []
+def get_symbol_callees(
+    environment: CodeGraphEnvironment,
+    root: Path,
+    symbol: str,
+) -> list[dict[str, Any]]:
+    data = run_codegraph_json(environment, ["callees", "-p", str(root), "-j", symbol], root, 30)
+    callees = data.get("callees")
+    return [item for item in callees if isinstance(item, dict)] if isinstance(callees, list) else []
 
 
 def extract_diff_methods(root: Path, diff_files: list[str]) -> list[str]:
@@ -951,7 +923,12 @@ def extract_diff_methods(root: Path, diff_files: list[str]) -> list[str]:
     return list(methods)
 
 
-def trace_callers_to_interface(root: Path, start_symbols: list[str], static_interfaces: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def trace_callers_to_interface(
+    environment: CodeGraphEnvironment,
+    root: Path,
+    start_symbols: list[str],
+    static_interfaces: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
     results = []
     visited = set()
     queue = []
@@ -969,7 +946,7 @@ def trace_callers_to_interface(root: Path, start_symbols: list[str], static_inte
             continue
         visited.add(curr_sym)
         
-        callers = get_symbol_callers(root, curr_sym)
+        callers = get_symbol_callers(environment, root, curr_sym)
         for caller in callers:
             fpath = caller.get("filePath", "")
             abs_fpath = str((root / fpath).resolve())
@@ -993,7 +970,12 @@ def trace_callers_to_interface(root: Path, start_symbols: list[str], static_inte
     return results
 
 
-def trace_callees_to_tables(root: Path, start_symbols: list[str], static_tables: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def trace_callees_to_tables(
+    environment: CodeGraphEnvironment,
+    root: Path,
+    start_symbols: list[str],
+    static_tables: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
     results = []
     visited = set()
     queue = []
@@ -1013,7 +995,7 @@ def trace_callees_to_tables(root: Path, start_symbols: list[str], static_tables:
             continue
         visited.add(curr_sym)
         
-        callees = get_symbol_callees(root, curr_sym)
+        callees = get_symbol_callees(environment, root, curr_sym)
         for callee in callees:
             fpath = callee.get("filePath", "")
             abs_fpath = str((root / fpath).resolve())
@@ -1525,6 +1507,8 @@ def main() -> int:
     parser.add_argument("--platform", default="", help="选定的物理数据连接平台（来自 xjjk-yewu-sql）。")
     args = parser.parse_args()
 
+    codegraph_environment = assert_codegraph_environment()
+
     run_dir = Path(args.run_dir)
     testcase_root = Path(args.testcase_root)
     code_source_root = Path(args.code_source_root)
@@ -1597,7 +1581,7 @@ def main() -> int:
             if service.get("source_type") == "git" and previous_service.get("commit") and service.get("commit") and previous_service.get("commit") != service.get("commit"):
                 diff_files = run_git_diff(root, str(previous_service.get("commit")), str(service.get("commit")))
             
-            init_codegraph_index(root)
+            prepare_codegraph_index(codegraph_environment, root)
             change_notes.extend(describe_service_change(service, previous_service, root))
             
             code_evidence_list.extend(scan_service_evidence(parsed_cases.get("cases", []), service, root))
