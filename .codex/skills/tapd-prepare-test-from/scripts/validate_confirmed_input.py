@@ -6,7 +6,7 @@ import argparse
 from datetime import datetime, timezone
 from pathlib import Path
 
-from preparation_contract import PreparationError, file_sha256, read_json_object, require_string, write_json_object
+from preparation_contract import PreparationError, file_sha256, load_cases, read_json_object, require_string, write_json_object
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -38,6 +38,7 @@ def main() -> int:
     confirmation_path: Path = existing_path(arguments.confirmation, "confirmation")
     test_cases_path: Path = existing_path(arguments.test_cases, "test_cases")
     cases_path: Path = existing_path(arguments.tapd_cases, "tapd_cases")
+    load_cases(cases_path)
     evidence_index_path: Path = existing_path(arguments.evidence_index, "evidence_index")
     input_paths: dict[str, Path] = {
         "test_cases": test_cases_path,

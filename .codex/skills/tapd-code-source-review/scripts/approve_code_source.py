@@ -7,6 +7,8 @@ import json
 from datetime import datetime
 from pathlib import Path
 
+from workflow_contract import sha256_file, successful_sources
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Approve a completed code source review run.")
@@ -29,6 +31,7 @@ def main() -> int:
         "approved_at": datetime.now().astimezone().isoformat(timespec="seconds"),
         "approver": args.approver,
         "manual_ignored_findings": args.ignored_finding or [],
+        "manifest_sha256": sha256_file(manifest_path),
     })
     write_json(confirmation_path, confirmation)
     sync_latest_confirmation(run_dir, manifest, confirmation)
@@ -46,16 +49,7 @@ def read_json_object(path: Path, label: str) -> dict[str, object]:
 
 
 def validate_review_outputs(run_dir: Path, manifest: dict[str, object]) -> None:
-    sources = manifest.get("code_sources")
-    if not isinstance(sources, list) or not sources:
-        raise ValueError("source_manifest.json.code_sources must contain at least one source")
-    failed = [
-        str(source.get("service_id", ""))
-        for source in sources
-        if isinstance(source, dict) and source.get("fetch_status") != "success"
-    ]
-    if failed:
-        raise ValueError(f"Cannot approve sources that were not fetched successfully: {', '.join(failed)}")
+    successful_sources(manifest)
     required = ["code_review_report.md", "code_prepare_findings.md"]
     if manifest.get("testcase_analysis_status") == "completed":
         required.extend([

@@ -31,17 +31,24 @@ output/
 │   │   └── <review_run_id>/
 │   │       ├── raw/
 │   │       │   ├── parsed_test_cases.json    # 解析出的测试用例数据
-│   │       │   ├── code_evidence.json        # 扫描到的代码匹配证据
+│   │       │   ├── prepare_findings.json      # 代码源初审结构化发现
+│   │       │   ├── code_entry_index.json     # 服务端入口索引
+│   │       │   ├── testcase_interface_evidence.json # 用例接口证据
+│   │       │   ├── call_chain_evidence.json  # 调用链证据
 │   │       │   ├── table_evidence.json       # 匹配库表数据
-│   │       │   └── interface_evidence.json   # 匹配接口数据
+│   │       │   └── table_resolution.json     # 表解析与确认状态
+│   │       ├── review_context.json            # 输入 Hash、平台、网关与疑问决策
+│   │       ├── code_source_confirmation.json  # 已批准代码源状态快照
 │   │       ├── unit_test_interfaces.md       # 单元测试接口文档 [NEW]
 │   │       ├── core_process_interfaces.md    # 核心流程接口文档 [NEW]
 │   │       ├── table_information.md          # 表信息文档 [NEW]
-│   │       ├── code_review_findings.md       # 扫描到的硬编码/缺陷清单
-│   │       ├── issue_tracking.md             # 代码缺陷闭环追踪
-│   │       ├── incremental_plan.md           # 增量扫描计划与 Hash
-│   │       └── change_summary.md             # 代码变更摘要
-│   └── latest/                               # 最新版测试用例证据审查报告(三大文档软链接/副本)
+│   │       ├── unresolved_tables.md           # 元数据未确认或冲突表
+│   │       ├── code_prepare_findings.md        # 代码源初审发现
+│   │       ├── testcase_evidence_summary.md   # 用例证据摘要
+│   │       ├── code_review_report.md          # 综合代码审查报告
+│   │       ├── evidence_index.json            # 批次与产物 Hash 索引
+│   │       └── review_validation.json         # 发布及审批就绪状态
+│   └── latest/                               # 仅由校验发布脚本生成的完整批次副本
 └── latest/
     └── testcase_confirmation.json            # 测试用例最终审计确认门禁 [最终审批后]
 ```
@@ -58,6 +65,7 @@ output/
 
 ### 3.3 表信息文档 (`table_information.md`)
 *   包含与用例流程关联的物理库表。表名称、字段名、类型、是否为空、默认值和物理表注释，必须完全取自所选平台的 `/xjjk-yewu-sql` 元数据文档。
+*   代码存在但元数据未唯一命中的表只能写入 `unresolved_tables.md`，不得写入本文件。
 
 ---
 
@@ -73,3 +81,5 @@ output/
   "code_review_run_id": "<review_run_id>"
 }
 ```
+
+禁止把 `latest/` 作为生成目录。必须先在 `runs/<review_run_id>/` 完整生成并校验，再发布整个目录。

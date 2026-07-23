@@ -1,0 +1,4 @@
+interface:
+  display_name: "TAPD 接口测试执行"
+  short_description: "执行已审批的接口测试和数据库断言并生成完整可追溯报告"
+  default_prompt: "Use $test-execute-from-tapd to execute an approved TAPD interface test plan and generate auditable reports."

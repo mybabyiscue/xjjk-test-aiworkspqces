@@ -4,7 +4,10 @@
 
 执行本技能前，必须能够读取以下文件：
 
-- `output/latest/test_cases.md`
+- `output/test_cases.md`
+- `output/requirement.md`
+- `output/questions.md`
+- `.codex/skills/xjjk-yewu-sql/state/documents/metadata_document.json`
 - `output/code_sources/latest/source_manifest.json`
 - `output/code_sources/latest/code_source_confirmation.json`
 
@@ -13,6 +16,8 @@
 必须同时满足：
 
 - `code_source_confirmation.json.approved = true`
+- 审批中的 `manifest_sha256` 与当前 `source_manifest.json` 一致。
+- 每个代码源的 `fetch_status = success`、`codegraph_status = healthy`，Git 分支与 Commit 不为空且不为 `HEAD`。
 
 测试用例的最终确认发生在本技能完成代码证据复查之后，因此 `testcase_confirmation.json` 不是本技能的输入门禁。代码源确认状态不是 `true` 时，必须立即停止。
 
@@ -46,7 +51,8 @@
 
 - 不允许手工伪造 `code_source_confirmation.json.approved = true` 继续执行。
 - 不允许通过预先写入 `testcase_confirmation.json.approved = true` 跳过本技能的最终人工审批。
-- 不允许在缺少 `test_cases.md` 时仅靠 `tapd_cases.json` 继续执行。
+- 不允许在缺少 `output/test_cases.md` 时仅靠 `tapd_cases.json` 继续执行。
+- 不允许把 `output/code_review/latest/` 作为 `--run-dir`。
 - 不允许在缺少 `source_manifest.json` 时直接扫描缓存目录。
 - 不允许跳过 `AGENTS.md` 读取。
 - 绝不允许在审计与分析阶段以任何理由对业务源码文件（包括 Java, Vue, JS, TS, XML, SQL 等）进行任何的写入、覆写或修改操作。发现代码或注释等任何层面的不一致，必须作为缺陷（Findings）在报告中记录，绝不允许直接在代码中做出订正。

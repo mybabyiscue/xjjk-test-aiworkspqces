@@ -37,7 +37,7 @@ def join_url(api_domain: object, path: object) -> str:
 def bullet_lines(value: object) -> list[str]:
     if not isinstance(value, list) or not value:
         return ["- 无"]
-    return [f"- {item}" for item in value]
+    return [f"- {json.dumps(item, ensure_ascii=False) if isinstance(item, (dict, list)) else item}" for item in value]
 
 
 def audit_lines(value: object) -> list[str]:
@@ -124,6 +124,20 @@ def render_flow_document(assessment: dict[str, object], snapshot: dict[str, obje
             headers: dict[str, object] = require_object(step_object.get("headers"), "flow_step.headers")
             expected: dict[str, object] = require_object(step_object.get("expected"), "flow_step.expected")
             lines.extend([f"### 步骤 {index}", f"- 服务：{evidence['service']}", f"- Controller：{evidence['controller_file']}#{evidence['controller_method']}", f"- HTTP Method：{evidence['http_method']}", f"- 请求 URL：{evidence['path']}", "- Header：", "```json", markdown_json(redact_headers(headers)), "```", "- 参数：", *parameter_table(step_object.get("parameters")), "- 参数依赖：", *bullet_lines(step_object.get("parameter_dependencies")), "- 请求体：", "```json", markdown_json(step_object.get("request_body")), "```", f"- 预期 HTTP 状态：{expected['http_status']}", "- 响应断言：", *bullet_lines(expected.get("response_assertions")), "- 数据库断言：", *bullet_lines(expected.get("database_assertions")), f"- 中断条件：{step_object['interrupt_condition']}", "- 清理步骤：", *bullet_lines(step_object.get("cleanup_steps")), ""])
+    if flows:
+        lines.extend(
+            [
+                "## 自动化调用骨架",
+                "",
+                "```python",
+                "for step in selected_flow[\"steps\"]:",
+                "    response = send_request(step)",
+                "    assert_response(response, step[\"expected\"])",
+                "    assert_database(step[\"expected\"][\"database_assertions\"])",
+                "```",
+                "",
+            ]
+        )
     return "\n".join(lines).strip() + "\n"
 
 

@@ -1,4 +1,4 @@
 interface:
   display_name: "TAPD Code Source Review"
-  short_description: "Fetch and gate code sources"
-  default_prompt: "Prepare and review HTTP code sources before testcase code analysis."
+  short_description: "Gate and audit TAPD code evidence"
+  default_prompt: "Use $tapd-code-source-review to fetch approved code sources and generate a validated testcase evidence review."
