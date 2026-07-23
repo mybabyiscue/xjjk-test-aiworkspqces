@@ -1,604 +1,719 @@
+"""Execute an approved, business-neutral HTTP and database assertion plan."""
+
+from __future__ import annotations
+
+import argparse
+import copy
 import json
-import pymysql
 import re
-import urllib.request
 import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
-from datetime import datetime
+from typing import TypeAlias
 
-def load_json(path):
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
+import pymysql
+from pymysql.connections import Connection
 
-def format_datetime(dt):
-    return dt.strftime("%Y-%m-%d %H:%M:%S")
+JsonObject: TypeAlias = dict[str, object]
+HttpResult: TypeAlias = tuple[int, str]
+SUPPORTED_OPERATORS: frozenset[str] = frozenset({"equals", "not_equals", "exists", "contains", "in"})
+SUPPORTED_VARIANTS: frozenset[str] = frozenset({"positive", "negative"})
+RETRYABLE_HTTP_STATUSES: frozenset[int] = frozenset({429, 500, 502, 503, 504})
+SENSITIVE_TOKENS: frozenset[str] = frozenset({"authorization", "cookie", "password", "secret", "token", "api-key", "apikey"})
+SQL_FORBIDDEN_PATTERN: re.Pattern[str] = re.compile(
+    r"\b(insert|update|delete|replace|alter|drop|create|truncate|grant|revoke|call|load|outfile|dumpfile|lock|unlock)\b",
+    re.IGNORECASE,
+)
+PATH_TOKEN_PATTERN: re.Pattern[str] = re.compile(r"(?:^|\.)([A-Za-z_][A-Za-z0-9_-]*)|\[(\d+)\]")
 
-def is_token_expired(status, response_body):
-    if status == 401:
-        return True
-    if status == 200 and response_body:
-        try:
-            data = json.loads(response_body)
-            code = data.get("code") or data.get("Code")
-            msg = data.get("msg") or data.get("Msg") or ""
-            if code in ["A00002", 2003] or "Token已失效" in msg or "Token失效" in msg or "登录已过期" in msg or "未授权" in msg:
-                return True
-            if code == "A00001" and "资源不存在" in msg:
-                return True
-        except Exception:
-            pass
-    return False
 
-def handle_token_expired(env_name, env_file_path):
-    print(f"\n[TOKEN_EXPIRED_ERROR] 检测到环境 【{env_name}】 的 Token 已失效！")
+def parse_arguments() -> argparse.Namespace:
+    parser: argparse.ArgumentParser = argparse.ArgumentParser(description="执行已审批的 TAPD 接口测试计划。")
+    parser.add_argument("--workspace", required=True)
+    parser.add_argument("--plan", required=True)
+    parser.add_argument("--confirmation", required=True)
+    parser.add_argument("--environment-config", required=True)
+    parser.add_argument("--environment-name", required=True)
+    parser.add_argument("--output-dir", required=True)
+    parser.add_argument("--manifest", required=True)
+    return parser.parse_args()
+
+
+def resolve_workspace_path(workspace: Path, relative_path: str, field_name: str) -> Path:
+    candidate: Path = Path(relative_path)
+    if candidate.is_absolute():
+        raise ValueError(f"{field_name} 必须是工作区相对路径：{relative_path}")
+    resolved: Path = (workspace / candidate).resolve()
     try:
-        new_token = input(f"请输入环境 【{env_name}】 的新 Token (或按 Enter 键跳过并退出): ").strip()
-        if new_token:
-            with open(env_file_path, "r", encoding="utf-8") as f:
-                config = json.load(f)
-            updated = False
-            for env in config.get("environments", []):
-                if env["name"] == env_name:
-                    env["authorization"] = new_token
-                    updated = True
-                    break
-            if updated:
-                with open(env_file_path, "w", encoding="utf-8") as f:
-                    json.dump(config, f, ensure_ascii=False, indent=2)
-                print(f"成功将新 Token 回填写入 environments_config.json 中的 【{env_name}】。")
-                return True
-    except (EOFError, Exception):
-        pass
-    sys.exit(10)
+        resolved.relative_to(workspace)
+    except ValueError as error:
+        raise ValueError(f"{field_name} 超出工作区边界：{relative_path}") from error
+    return resolved
 
-def check_column_exists(conn, table_name, column_name):
+
+def read_json_object(path: Path, field_name: str) -> JsonObject:
     try:
-        with conn.cursor() as cursor:
-            cursor.execute(f"SHOW COLUMNS FROM `{table_name}` LIKE '{column_name}'")
-            return cursor.fetchone() is not None
-    except Exception:
-        return False
-
-def detect_active_tenant(conn, db_config):
-    tenant_id = db_config.get("tenant_id")
-    if tenant_id is not None:
-        return tenant_id
-        
-    has_tenant_col = check_column_exists(conn, "live_config", "tenant_id")
-    if not has_tenant_col:
-        return None
-        
-    tenant_scores = {}
-    tables_to_check = ["live_config", "project_course_subject", "redpack_activity_info"]
-    with conn.cursor(pymysql.cursors.DictCursor) as cursor:
-        for table in tables_to_check:
-            try:
-                cursor.execute(f"SELECT tenant_id, COUNT(*) as c FROM `{table}` WHERE tenant_id IS NOT NULL AND tenant_id != 0 GROUP BY tenant_id")
-                for row in cursor.fetchall():
-                    tid = row["tenant_id"]
-                    tenant_scores[tid] = tenant_scores.get(tid, 0) + row["c"]
-            except Exception:
-                pass
-                
-    if not tenant_scores:
-        return None
-        
-    sorted_tenants = sorted(tenant_scores.items(), key=lambda x: x[1], reverse=True)
-    max_tid, max_count = sorted_tenants[0]
-    total_count = sum(tenant_scores.values())
-    
-    if total_count > 0 and (max_count / total_count) >= 0.70:
-        return max_tid
-        
-    candidate_list = [tid for tid, _ in sorted_tenants[:5]]
-    print(f"\n[TENANT_AMBIGUITY_ERROR] 检测到数据库中有多个活跃租户: {candidate_list}，且无绝对主导（70%以上）。")
+        raw_content: str = path.read_text(encoding="utf-8-sig")
+    except OSError as error:
+        raise FileNotFoundError(f"无法读取 {field_name}：{path}；请生成或修复该前置文件。") from error
     try:
-        chosen = input(f"请从 {candidate_list} 中输入要测试的租户 ID (或按 Enter 键跳过并以 Exit Code 11 退出): ").strip()
-        if chosen:
-            return int(chosen)
-    except (EOFError, ValueError, Exception):
-        pass
-    sys.exit(11)
+        value: object = json.loads(raw_content)
+    except json.JSONDecodeError as error:
+        raise ValueError(f"{field_name} 不是合法 JSON：{path}；请修复第 {error.lineno} 行。") from error
+    return require_object(value, field_name)
 
-def rewrite_sql_for_tenant(conn, sql, table_name, tenant_id):
-    if tenant_id is not None and check_column_exists(conn, table_name, "tenant_id"):
-        sql = re.sub(r"tenant_id\s*=\s*\d+", f"tenant_id = {tenant_id}", sql)
+
+def require_object(value: object, field_name: str) -> JsonObject:
+    if not isinstance(value, dict):
+        raise TypeError(f"{field_name} 必须是对象。")
+    return value
+
+
+def require_list(value: object, field_name: str) -> list[object]:
+    if not isinstance(value, list):
+        raise TypeError(f"{field_name} 必须是数组。")
+    return value
+
+
+def require_string(value: object, field_name: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise TypeError(f"{field_name} 必须是非空字符串。")
+    return value.strip()
+
+
+def require_integer(value: object, field_name: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise TypeError(f"{field_name} 必须是整数。")
+    return value
+
+
+def validate_relative_api_path(value: object, field_name: str) -> str:
+    path: str = require_string(value, field_name)
+    parsed: urllib.parse.SplitResult = urllib.parse.urlsplit(path)
+    if not path.startswith("/") or parsed.scheme or parsed.netloc:
+        raise ValueError(f"{field_name} 必须是以 / 开头的相对网关路径。")
+    return path
+
+
+def validate_headers(value: object, field_name: str) -> dict[str, str]:
+    raw_headers: JsonObject = require_object(value, field_name)
+    headers: dict[str, str] = {}
+    for raw_name, raw_value in raw_headers.items():
+        name: str = require_string(raw_name, f"{field_name}.name")
+        header_value: str = require_string(raw_value, f"{field_name}.{name}")
+        if any(token in name.lower() for token in SENSITIVE_TOKENS):
+            raise ValueError(f"{field_name}.{name} 不得保存敏感凭证；请使用 authorization_header。")
+        headers[name] = header_value
+    return headers
+
+
+def validate_assertion(value: object, field_name: str) -> JsonObject:
+    assertion: JsonObject = require_object(value, field_name)
+    require_string(assertion.get("path"), f"{field_name}.path")
+    operator: str = require_string(assertion.get("operator"), f"{field_name}.operator")
+    if operator not in SUPPORTED_OPERATORS:
+        raise ValueError(f"{field_name}.operator 不支持：{operator}")
+    if operator != "exists" and "value" not in assertion:
+        raise ValueError(f"{field_name}.value 不得缺失。")
+    return assertion
+
+
+def validate_read_only_sql(sql: str, field_name: str) -> str:
+    normalized: str = sql.strip()
+    if not re.match(r"^select\b", normalized, re.IGNORECASE):
+        raise ValueError(f"{field_name} 只能包含 SELECT。")
+    if ";" in normalized or "--" in normalized or "/*" in normalized or SQL_FORBIDDEN_PATTERN.search(normalized):
+        raise ValueError(f"{field_name} 包含禁止的多语句、注释或写操作。")
+    return normalized
+
+
+def validate_database_assertion(value: object, field_name: str) -> JsonObject:
+    assertion: JsonObject = require_object(value, field_name)
+    require_string(assertion.get("database"), f"{field_name}.database")
+    require_string(assertion.get("table"), f"{field_name}.table")
+    sql: str = require_string(assertion.get("sql"), f"{field_name}.sql")
+    validate_read_only_sql(sql, f"{field_name}.sql")
+    require_list(assertion.get("parameters"), f"{field_name}.parameters")
+    assertions: list[object] = require_list(assertion.get("assertions"), f"{field_name}.assertions")
+    if not assertions:
+        raise ValueError(f"{field_name}.assertions 不得为空。")
+    for index, raw_assertion in enumerate(assertions, start=1):
+        validate_assertion(raw_assertion, f"{field_name}.assertions[{index}]")
+    return assertion
+
+
+def validate_expected(value: object, field_name: str) -> JsonObject:
+    expected: JsonObject = require_object(value, field_name)
+    require_integer(expected.get("http_status"), f"{field_name}.http_status")
+    response_assertions: list[object] = require_list(expected.get("response_assertions"), f"{field_name}.response_assertions")
+    if not response_assertions:
+        raise ValueError(f"{field_name}.response_assertions 不得为空。")
+    for index, raw_assertion in enumerate(response_assertions, start=1):
+        validate_assertion(raw_assertion, f"{field_name}.response_assertions[{index}]")
+    database_assertions: list[object] = require_list(expected.get("database_assertions"), f"{field_name}.database_assertions")
+    for index, raw_assertion in enumerate(database_assertions, start=1):
+        validate_database_assertion(raw_assertion, f"{field_name}.database_assertions[{index}]")
+    return expected
+
+
+def validate_request(value: object, field_name: str) -> JsonObject:
+    request: JsonObject = require_object(value, field_name)
+    require_string(request.get("id"), f"{field_name}.id")
+    case_ids: list[object] = require_list(request.get("case_ids"), f"{field_name}.case_ids")
+    if not case_ids:
+        raise ValueError(f"{field_name}.case_ids 不得为空。")
+    for index, case_id in enumerate(case_ids, start=1):
+        require_string(case_id, f"{field_name}.case_ids[{index}]")
+    variant_type: str = require_string(request.get("variant_type"), f"{field_name}.variant_type")
+    if variant_type not in SUPPORTED_VARIANTS:
+        raise ValueError(f"{field_name}.variant_type 不支持：{variant_type}")
+    require_string(request.get("method"), f"{field_name}.method")
+    validate_relative_api_path(request.get("path"), f"{field_name}.path")
+    validate_headers(request.get("headers"), f"{field_name}.headers")
+    authorization_header: object = request.get("authorization_header")
+    if not isinstance(authorization_header, str):
+        raise TypeError(f"{field_name}.authorization_header 必须是字符串。")
+    require_object(request.get("query"), f"{field_name}.query")
+    if "body" not in request:
+        raise ValueError(f"{field_name}.body 不得缺失。")
+    validate_expected(request.get("expected"), f"{field_name}.expected")
+    return request
+
+
+def validate_dependency(value: object, field_name: str, prior_step_ids: set[str]) -> JsonObject:
+    dependency: JsonObject = require_object(value, field_name)
+    source_step: str = require_string(dependency.get("source_step"), f"{field_name}.source_step")
+    if source_step not in prior_step_ids:
+        raise ValueError(f"{field_name}.source_step 必须引用更早的步骤：{source_step}")
+    require_string(dependency.get("source_path"), f"{field_name}.source_path")
+    target: str = require_string(dependency.get("target"), f"{field_name}.target")
+    if target not in {"body", "query"}:
+        raise ValueError(f"{field_name}.target 只能是 body 或 query。")
+    require_string(dependency.get("target_path"), f"{field_name}.target_path")
+    return dependency
+
+
+def validate_plan(plan: JsonObject, confirmation: JsonObject) -> None:
+    if require_integer(plan.get("version"), "plan.version") != 1:
+        raise ValueError("plan.version 必须等于 1。")
+    if confirmation.get("approved") is not True:
+        raise PermissionError("testcase_confirmation.json.approved 必须为 true；请先完成人工审批。")
+    testcase_hash: str = require_string(plan.get("testcase_hash"), "plan.testcase_hash")
+    approved_hash: str = require_string(confirmation.get("testcase_hash"), "confirmation.testcase_hash")
+    if testcase_hash != approved_hash:
+        raise PermissionError("执行计划的 testcase_hash 与审批文件不一致；请重新生成并审批计划。")
+    seen_ids: set[str] = set()
+    for index, raw_request in enumerate(require_list(plan.get("requests"), "plan.requests"), start=1):
+        request: JsonObject = validate_request(raw_request, f"plan.requests[{index}]")
+        request_id: str = require_string(request.get("id"), f"plan.requests[{index}].id")
+        if request_id in seen_ids:
+            raise ValueError(f"请求 ID 重复：{request_id}")
+        seen_ids.add(request_id)
+    for flow_index, raw_flow in enumerate(require_list(plan.get("flows"), "plan.flows"), start=1):
+        flow: JsonObject = require_object(raw_flow, f"plan.flows[{flow_index}]")
+        require_string(flow.get("id"), f"plan.flows[{flow_index}].id")
+        require_string(flow.get("name"), f"plan.flows[{flow_index}].name")
+        steps: list[object] = require_list(flow.get("steps"), f"plan.flows[{flow_index}].steps")
+        if len(steps) < 2:
+            raise ValueError(f"plan.flows[{flow_index}].steps 至少包含两个步骤。")
+        prior_step_ids: set[str] = set()
+        for step_index, raw_step in enumerate(steps, start=1):
+            step_name: str = f"plan.flows[{flow_index}].steps[{step_index}]"
+            step: JsonObject = validate_request(raw_step, step_name)
+            step_id: str = require_string(step.get("id"), f"{step_name}.id")
+            if step_id in prior_step_ids:
+                raise ValueError(f"流程步骤 ID 重复：{step_id}")
+            for dependency_index, raw_dependency in enumerate(require_list(step.get("dependencies"), f"{step_name}.dependencies"), start=1):
+                validate_dependency(raw_dependency, f"{step_name}.dependencies[{dependency_index}]", prior_step_ids)
+            prior_step_ids.add(step_id)
+
+
+def select_environment(config: JsonObject, environment_name: str) -> JsonObject:
+    matches: list[JsonObject] = []
+    for index, raw_environment in enumerate(require_list(config.get("environments"), "environment_config.environments"), start=1):
+        environment: JsonObject = require_object(raw_environment, f"environment_config.environments[{index}]")
+        if require_string(environment.get("name"), f"environment_config.environments[{index}].name") == environment_name:
+            matches.append(environment)
+    if not matches:
+        available: list[str] = [
+            str(item.get("name")) for item in require_list(config.get("environments"), "environment_config.environments") if isinstance(item, dict)
+        ]
+        raise LookupError(f"未找到用户确认的平台 {environment_name}；可选平台：{available}")
+    if len(matches) != 1:
+        raise LookupError(f"平台名称 {environment_name} 存在 {len(matches)} 个候选；请修复配置后重新确认。")
+    require_string(matches[0].get("api_domain"), f"environment[{environment_name}].api_domain")
+    return matches[0]
+
+
+def path_tokens(path: str) -> list[str | int]:
+    if path == "$":
+        return []
+    if not path.startswith("$"):
+        raise ValueError(f"JSON 路径必须以 $ 开头：{path}")
+    suffix: str = path[1:]
+    tokens: list[str | int] = []
+    position: int = 0
+    for match in PATH_TOKEN_PATTERN.finditer(suffix):
+        if match.start() != position:
+            raise ValueError(f"不支持的 JSON 路径：{path}")
+        tokens.append(match.group(1) if match.group(1) is not None else int(match.group(2)))
+        position = match.end()
+    if position != len(suffix):
+        raise ValueError(f"不支持的 JSON 路径：{path}")
+    return tokens
+
+
+def extract_path(value: object, path: str) -> tuple[bool, object]:
+    current: object = value
+    for token in path_tokens(path):
+        if isinstance(token, str) and isinstance(current, dict) and token in current:
+            current = current[token]
+        elif isinstance(token, int) and isinstance(current, list) and token < len(current):
+            current = current[token]
+        else:
+            return False, None
+    return True, current
+
+
+def replace_path(value: object, path: str, replacement: object) -> object:
+    cloned: object = copy.deepcopy(value)
+    tokens: list[str | int] = path_tokens(path)
+    if not tokens:
+        return copy.deepcopy(replacement)
+    current: object = cloned
+    for token in tokens[:-1]:
+        if isinstance(token, str) and isinstance(current, dict) and token in current:
+            current = current[token]
+        elif isinstance(token, int) and isinstance(current, list) and token < len(current):
+            current = current[token]
+        else:
+            raise ValueError(f"依赖目标路径不存在：{path}")
+    final_token: str | int = tokens[-1]
+    if isinstance(final_token, str) and isinstance(current, dict) and final_token in current:
+        current[final_token] = copy.deepcopy(replacement)
+    elif isinstance(final_token, int) and isinstance(current, list) and final_token < len(current):
+        current[final_token] = copy.deepcopy(replacement)
     else:
-        sql = re.sub(r"tenant_id\s*=\s*\d+\s*AND", "", sql, flags=re.IGNORECASE)
-        sql = re.sub(r"AND\s*tenant_id\s*=\s*\d+", "", sql, flags=re.IGNORECASE)
-        sql = re.sub(r"WHERE\s*tenant_id\s*=\s*\d+\s*LIMIT", "LIMIT", sql, flags=re.IGNORECASE)
-        sql = re.sub(r"WHERE\s*tenant_id\s*=\s*\d+", "", sql, flags=re.IGNORECASE)
-    return sql
+        raise ValueError(f"依赖目标路径不存在：{path}")
+    return cloned
 
-def send_request(url, method, headers, payload_str):
-    data = payload_str.encode('utf-8') if payload_str and payload_str != "无" else None
-    req = urllib.request.Request(url, data=data, headers=headers, method=method)
-    try:
-        with urllib.request.urlopen(req, timeout=10) as res:
-            status = res.status
-            body = res.read().decode('utf-8')
-            return status, body, None
-    except Exception as e:
-        return 500, "", str(e)
 
-def main():
-    workspace_dir = Path("d:/xjcode/测试每周总结")
-    output_dir = workspace_dir / "output"
-    
-    prep_file = output_dir / "interface_test_preparation.md"
-    flow_file = output_dir / "integration_test_flow.md"
-    env_file = workspace_dir / "environments_config.json"
-    
-    # 1. Preflight Check
-    if not (prep_file.exists() and flow_file.exists() and env_file.exists()):
-        print("Error: Missing input files. Exiting.")
-        return
-        
-    env_config = load_json(env_file)
-    db_config = env_config.get("database", {})
-    
-    # 2. Parse database queries in Section 3 of preparation manual
-    prep_content = prep_file.read_text(encoding="utf-8")
-    
-    # Parse SQL queries registered
-    sql_sections = re.findall(
-        r"### 3\.\d+ \[(.*?)\] 关联数据\r?\n- \*\*数据来源\*\*：反查自 `mall4cloud_saas_scrm\.(.*?)`\r?\n- \*\*反查方式\*\*：\r?\n\s*```sql\r?\n\s*(.*?)\r?\n\s*```",
-        prep_content
-    )
-    sql_registry = {}
-    for api, table, sql in sql_sections:
-        sql_registry[api.strip()] = {
-            "table": table.strip(),
-            "sql": sql.strip()
-        }
-
-    # 3. Parse Case Details under Section 4
-    case_blocks = re.split(r"### 4\.\d+ \[(TC\d+) - (.*?)\]", prep_content)
-    parsed_cases = []
-    
-    # Parse consistency errors
-    format_errors = []
-    missing_vars = []
-    internal_contradictions = []
-    script_mismatches = []
-    duplicates = {}
-    
-    if len(case_blocks) > 1:
-        for i in range(1, len(case_blocks), 3):
-            tc_id = case_blocks[i]
-            tc_name = case_blocks[i+1]
-            body = case_blocks[i+2]
-            
-            # Find fields using regex
-            type_match = re.search(r"- \*\*用例类型\*\*：`(.*?)`", body)
-            api_match = re.search(r"- \*\*对应接口\*\*：`(.*?)`", body)
-            method_match = re.search(r"- \*\*HTTP Method\*\*：(.*?)(\r?\n|$)", body)
-            url_match = re.search(r"- \*\*请求 URL\*\*：`(.*?)`", body)
-            header_match = re.search(r"- \*\*Header\*\*：\r?\n```json\r?\n(.*?)\r?\n```", body, re.DOTALL)
-            param_match = re.search(r"- \*\*参数映射表\*\*：\r?\n\r?\n(.*?)(?=\r?\n- \*\*|\r?\n###|\Z)", body, re.DOTALL)
-            body_match = re.search(r"- \*\*请求体示例 \(Request Body\)\*\*：\r?\n```json\r?\n(.*?)\r?\n```", body, re.DOTALL)
-            expect_match = re.search(r"- \*\*预期响应\*\*：(.*?)(\r?\n|$)", body)
-            
-            if not (api_match and method_match and url_match and header_match and expect_match):
-                format_errors.append(tc_id)
-                continue
-                
-            case_data = {
-                "id": tc_id,
-                "name": tc_name.strip(),
-                "type": type_match.group(1).strip() if type_match else "positive",
-                "api": api_match.group(1).strip(),
-                "method": method_match.group(1).strip(),
-                "url": url_match.group(1).strip(),
-                "header_template": header_match.group(1).strip(),
-                "body_template": body_match.group(1).strip() if body_match else "无",
-                "expect": expect_match.group(1).strip(),
-                "params": param_match.group(1).strip() if param_match else ""
-            }
-            parsed_cases.append(case_data)
-
-    # 4. Consistency Auditing (Section 3.1)
-    # Check variables in templates
-    resolved_vars = {}
-    
-    # Query database dynamically to load variables
-    db_connected = False
-    try:
-        conn = pymysql.connect(
-            host=db_config.get("host"),
-            port=db_config.get("port", 3306),
-            user=db_config.get("user"),
-            password=db_config.get("password"),
-            database=db_config.get("database"),
-            charset="utf8mb4"
-        )
-        db_connected = True
-    except Exception as e:
-        print(f"Warning: Database connection failed: {e}. Variable lookup will fail.")
-        
-    if db_connected:
-        with conn.cursor(pymysql.cursors.DictCursor) as cursor:
-            # 1. Detect active tenant ID (returns None if single-tenant)
-            tenant_id = detect_active_tenant(conn, db_config)
-            resolved_vars["DB.live_config.tenant_id"] = tenant_id if tenant_id is not None else 0
-            
-            # 2. Query all tables from sql_registry with SQL rewriting
-            for api, item in sql_registry.items():
-                sql = item["sql"]
-                table = item["table"]
-                try:
-                    rewritten_sql = rewrite_sql_for_tenant(conn, sql, table, tenant_id)
-                    cursor.execute(rewritten_sql)
-                    row = cursor.fetchone()
-                    if row:
-                        for col, val in row.items():
-                            resolved_vars[f"DB.{table}.{col}"] = val
-                except Exception as ex:
-                    print(f"Query failed for {table}: {ex}")
-            
-            # 3. Query valid customer unionid and id
-            try:
-                if tenant_id is not None:
-                    cust_sql = f"SELECT id, unionid FROM wework_customer WHERE tenant_id = {tenant_id} AND unionid IS NOT NULL AND unionid != '' LIMIT 1"
-                else:
-                    cust_sql = "SELECT id, unionid FROM wework_customer WHERE unionid IS NOT NULL AND unionid != '' LIMIT 1"
-                cursor.execute(cust_sql)
-                cust_row = cursor.fetchone()
-                if cust_row:
-                    resolved_vars["ENV.unionId"] = cust_row["unionid"]
-                    resolved_vars["ENV.openId"] = cust_row["unionid"]
-                    resolved_vars["DB.customer.id"] = cust_row["id"]
-                else:
-                    resolved_vars["ENV.unionId"] = "o0W2n1a2NAp2LXq7--xMKkm6WydY"
-                    resolved_vars["ENV.openId"] = "o0W2n1a2NAp2LXq7--xMKkm6WydY"
-                    resolved_vars["DB.customer.id"] = 1
-            except Exception as e:
-                print(f"Failed to query valid customer: {e}")
-                resolved_vars["ENV.unionId"] = "o0W2n1a2NAp2LXq7--xMKkm6WydY"
-                resolved_vars["ENV.openId"] = "o0W2n1a2NAp2LXq7--xMKkm6WydY"
-                resolved_vars["DB.customer.id"] = 1
-        conn.close()
-
-    # ENV placeholders
-    for env in env_config.get("environments", []):
-        name = env["name"]
-        resolved_vars[f"ENV.environments[{name}].authorization"] = env.get("authorization", "")
-        resolved_vars[f"ENV.environments[{name}].api_domain"] = env.get("api_domain", "")
-    resolved_vars["ENV.api_domain"] = env_config.get("environments", [{}])[-1].get("api_domain", "https://api.test.njxjjt.com").rstrip("/")
-
-    # Check each case for missing variables and contradictions
-    valid_cases = []
-    ignored_cases = []
-    
-    for case in parsed_cases:
-        has_error = False
-        reasons = []
-        
-        # 1. Search for placeholders in body and header templates
-        all_placeholders = re.findall(r"\{\{\s*(.*?)\s*\}\}", case["body_template"] + case["header_template"] + case["url"])
-        
-        # Check variable existence (Gate 2)
-        for ph in all_placeholders:
-            ph_clean = ph.split(" ")[0].strip()
-            # Skip invalid values or step inheritances
-            if ph_clean.startswith("INVALID_") or ph_clean.startswith("上一步"):
-                continue
-            if ph_clean not in resolved_vars:
-                has_error = True
-                reasons.append(f"变量来源缺失: `{ph_clean}` 未在数据准备或配置中找到真实取值")
-                
-        # 2. Check internal contradiction (Gate 3)
-        # E.g. Check if ID in URL is hardcoded while payload uses variable
-        if "config/delete" in case["url"] and "id=" in case["url"] and "{{" not in case["url"]:
-            has_error = True
-            reasons.append("文档内部矛盾: 请求 URL 中包含写死的字面值，但用例参数表要求变量化")
-
-        # 3. Check duplicate coverage (Gate 5)
-        # Group identical requests
-        sig = f"{case['method']} {case['api']} {case['body_template']}"
-        if sig in duplicates:
-            duplicates[sig].append(case["id"])
-            has_error = True
-            reasons.append(f"重复覆盖: 与用例 {duplicates[sig][0]} 请求参数完全相同")
+def assertion_passed(actual_root: object, assertion: JsonObject) -> tuple[bool, str]:
+    path: str = require_string(assertion.get("path"), "assertion.path")
+    operator: str = require_string(assertion.get("operator"), "assertion.operator")
+    exists, actual = extract_path(actual_root, path)
+    expected: object = assertion.get("value")
+    if operator == "exists":
+        passed: bool = exists
+    elif operator == "equals":
+        passed = exists and actual == expected
+    elif operator == "not_equals":
+        passed = exists and actual != expected
+    elif operator == "contains":
+        if isinstance(actual, str):
+            passed = exists and isinstance(expected, str) and expected in actual
+        elif isinstance(actual, list):
+            passed = exists and expected in actual
+        elif isinstance(actual, dict):
+            passed = exists and isinstance(expected, str) and expected in actual
         else:
-            duplicates[sig] = [case["id"]]
-            
-        if has_error:
-            ignored_cases.append({
-                "id": case["id"],
-                "name": case["name"],
-                "reasons": reasons
-            })
+            passed = False
+    elif operator == "in":
+        if isinstance(expected, str):
+            passed = exists and isinstance(actual, str) and actual in expected
+        elif isinstance(expected, list):
+            passed = exists and actual in expected
+        elif isinstance(expected, dict):
+            passed = exists and isinstance(actual, str) and actual in expected
         else:
-            valid_cases.append(case)
+            passed = False
+    else:
+        raise ValueError(f"不支持的断言操作符：{operator}")
+    detail: str = json.dumps({"path": path, "operator": operator, "expected": expected, "actual": actual, "exists": exists}, ensure_ascii=False)
+    return passed, detail
 
-    # 5. Run Standalone Unit Test Cases (Section 3.3)
-    results = []
-    for case in valid_cases:
-        # Resolve templates
-        url = case["url"]
-        body = case["body_template"]
-        header = case["header_template"]
-        
-        # Determine positive vs negative values
-        is_neg = case["type"] == "negative"
-        
-        # Replace DB and ENV placeholders
-        for ph_name, ph_val in resolved_vars.items():
-            pattern = r"\{\{\s*" + re.escape(ph_name) + r"\s*\}\}"
-            url = re.sub(pattern, str(ph_val), url)
-            body = re.sub(pattern, str(ph_val), body)
-            header = re.sub(pattern, str(ph_val), header)
-            
-        # Handle INVALID placeholders
-        inv_placeholders = re.findall(r"\{\{\s*(INVALID_.*?)\s*\}\}", body + header + url)
-        for inv in inv_placeholders:
-            inv_name = inv.split(" ")[0].strip()
-            # Fake/invalid values
-            fake_val = "999999" if "ID" in inv_name else ("99" if "STATUS" in inv_name else "wxInvalidVal")
-            pattern = r"\{\{\s*" + re.escape(inv) + r"\s*\}\}"
-            url = re.sub(pattern, fake_val, url)
-            body = re.sub(pattern, fake_val, body)
-            header = re.sub(pattern, fake_val, header)
 
-        # Parse headers JSON
+def structured_warning(operation: str, attempt: int, reason: str) -> None:
+    print(json.dumps({"level": "WARNING", "operation": operation, "attempt": attempt, "reason": reason}, ensure_ascii=False), file=sys.stderr)
+
+
+def request_once(url: str, method: str, headers: dict[str, str], body: object) -> HttpResult:
+    data: bytes | None = None if body is None else json.dumps(body, ensure_ascii=False).encode("utf-8")
+    request: urllib.request.Request = urllib.request.Request(url, data=data, headers=headers, method=method.upper())
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return response.status, response.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as error:
+        return error.code, error.read().decode("utf-8", errors="replace")
+
+
+def send_request(url: str, method: str, headers: dict[str, str], body: object) -> HttpResult:
+    last_error: urllib.error.URLError | None = None
+    for attempt in range(1, 4):
         try:
-            headers_dict = json.loads(header)
-        except Exception:
-            headers_dict = {"Content-Type": "application/json"}
-            
-        # Send Request with retry on token expiration
-        for retry in range(2):
-            status, response_body, err = send_request(url, case["method"], headers_dict, body)
-            if is_token_expired(status, response_body):
-                # Check which environment token was used
-                env_name = "miniapp" if "miniapp" in header else "鲨域租户端"
-                if handle_token_expired(env_name, env_file):
-                    # Reload new token and update headers
-                    new_cfg = load_json(env_file)
-                    new_token = ""
-                    for env in new_cfg.get("environments", []):
-                        if env["name"] == env_name:
-                            new_token = env.get("authorization", "")
-                            break
-                    for k, v in headers_dict.items():
-                        if k.lower() == "authorization":
-                            headers_dict[k] = new_token
-                            break
-                    print("已更新 Token 并重试单元测试用例...")
-                    continue
-            break
-        
-        # Assertion
-        passed = False
-        if is_neg:
-            # Negative test assertion: expects failure status or code!=0
-            if status >= 400 or (status == 200 and ("code" in response_body and not response_body.startswith('{"code":0'))):
-                passed = True
-        else:
-            # Positive test assertion: expects 200 OK and code=0
-            if status == 200 and (not "code" in response_body or '"code":0' in response_body or '"code": 0' in response_body):
-                passed = True
-                
-        results.append({
-            "id": case["id"],
-            "name": case["name"],
-            "api": case["api"],
-            "type": case["type"],
-            "status": status,
-            "passed": passed,
-            "response": response_body if not err else f"Execution Error: {err}"
-        })
+            status, response_body = request_once(url, method, headers, body)
+        except urllib.error.URLError as error:
+            last_error = error
+            if attempt < 3:
+                structured_warning("http_request", attempt, str(error.reason))
+                time.sleep(float(attempt))
+                continue
+            raise ConnectionError(
+                f"HTTP 请求失败；method={method}；url={url}；status=不可用；response_body=不可用；"
+                f"原因={error.reason}；修复建议=检查网络、域名和测试环境服务状态。"
+            ) from error
+        if status in RETRYABLE_HTTP_STATUSES and attempt < 3:
+            structured_warning("http_request", attempt, f"HTTP {status}: {response_body}")
+            time.sleep(float(attempt))
+            continue
+        return status, response_body
+    raise ConnectionError(f"HTTP 请求重试耗尽：{last_error}")
 
-    # 6. Generate Unit Test Report (Section 4.1)
-    report_lines = [
+
+def parse_response_body(response_body: str) -> object:
+    try:
+        return json.loads(response_body)
+    except json.JSONDecodeError:
+        return response_body
+
+
+def is_token_expired(status: int, response: object, token_error_codes: set[str]) -> bool:
+    if status in {401, 403}:
+        return True
+    if not isinstance(response, dict):
+        return False
+    raw_code: object = response.get("code", response.get("Code"))
+    return raw_code is not None and str(raw_code) in token_error_codes
+
+
+def open_database_connection(database_config: JsonObject) -> Connection:
+    required_fields: tuple[str, ...] = ("host", "user", "password", "database")
+    values: dict[str, str] = {field: require_string(database_config.get(field), f"database.{field}") for field in required_fields}
+    port: int = require_integer(database_config.get("port"), "database.port")
+    try:
+        return pymysql.connect(
+            host=values["host"],
+            port=port,
+            user=values["user"],
+            password=values["password"],
+            database=values["database"],
+            charset="utf8mb4",
+            cursorclass=pymysql.cursors.DictCursor,
+            autocommit=True,
+        )
+    except pymysql.MySQLError as error:
+        raise ConnectionError(
+            f"数据库连接失败；host={values['host']}；port={port}；database={values['database']}；"
+            f"原因={error}；修复建议=确认用户选择的平台对应只读连接配置和网络权限。"
+        ) from error
+
+
+def execute_database_assertion(connection: Connection, assertion: JsonObject) -> tuple[list[JsonObject], list[tuple[bool, str]]]:
+    sql: str = validate_read_only_sql(require_string(assertion.get("sql"), "database_assertion.sql"), "database_assertion.sql")
+    parameters: list[object] = require_list(assertion.get("parameters"), "database_assertion.parameters")
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(sql, tuple(parameters))
+            raw_rows: list[JsonObject] = list(cursor.fetchall())
+    except pymysql.MySQLError as error:
+        raise RuntimeError(
+            f"数据库断言查询失败；sql={sql}；parameters={parameters}；status=不适用；response_body=不适用；"
+            f"原因={error}；修复建议=核对准备阶段登记的只读 SQL、参数和表结构。"
+        ) from error
+    results: list[tuple[bool, str]] = [
+        assertion_passed(raw_rows, validate_assertion(item, "database_assertion.assertion"))
+        for item in require_list(assertion.get("assertions"), "database_assertion.assertions")
+    ]
+    return raw_rows, results
+
+
+def redact(value: object) -> object:
+    if isinstance(value, dict):
+        return {
+            str(key): "***" if any(token in str(key).lower() for token in SENSITIVE_TOKENS) else redact(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [redact(item) for item in value]
+    return value
+
+
+def build_headers(request: JsonObject, environment: JsonObject) -> dict[str, str]:
+    headers: dict[str, str] = validate_headers(request.get("headers"), "request.headers")
+    authorization_header: object = request.get("authorization_header")
+    if isinstance(authorization_header, str) and authorization_header:
+        token: str = require_string(environment.get("authorization"), f"environment[{environment.get('name')}].authorization")
+        headers[authorization_header] = token
+    return headers
+
+
+def request_url(environment: JsonObject, request: JsonObject) -> str:
+    api_domain: str = require_string(environment.get("api_domain"), "environment.api_domain").rstrip("/")
+    path: str = validate_relative_api_path(request.get("path"), "request.path")
+    query: JsonObject = require_object(request.get("query"), "request.query")
+    query_string: str = urllib.parse.urlencode(query, doseq=True)
+    return f"{api_domain}{path}" + (f"?{query_string}" if query_string else "")
+
+
+def run_request(
+    request: JsonObject,
+    environment: JsonObject,
+    database_config: JsonObject | None,
+    token_error_codes: set[str],
+) -> tuple[JsonObject, list[tuple[str, str, JsonObject]]]:
+    url: str = request_url(environment, request)
+    headers: dict[str, str] = build_headers(request, environment)
+    method: str = require_string(request.get("method"), "request.method").upper()
+    body: object = request.get("body")
+    started_at: str = datetime.now(timezone.utc).isoformat()
+    status, response_body = send_request(url, method, headers, body)
+    parsed_response: object = parse_response_body(response_body)
+    if is_token_expired(status, parsed_response, token_error_codes):
+        print(f"[TOKEN_EXPIRED_ERROR] {environment.get('name')}", file=sys.stderr)
+        raise SystemExit(10)
+    expected: JsonObject = require_object(request.get("expected"), "request.expected")
+    assertion_results: list[tuple[bool, str]] = []
+    expected_status: int = require_integer(expected.get("http_status"), "request.expected.http_status")
+    assertion_results.append((status == expected_status, f"HTTP status expected={expected_status}, actual={status}"))
+    for raw_assertion in require_list(expected.get("response_assertions"), "request.expected.response_assertions"):
+        assertion_results.append(assertion_passed(parsed_response, validate_assertion(raw_assertion, "response_assertion")))
+    manifest_rows: list[tuple[str, str, JsonObject]] = []
+    database_result_details: list[JsonObject] = []
+    database_assertions: list[object] = require_list(expected.get("database_assertions"), "request.expected.database_assertions")
+    if database_assertions:
+        if database_config is None:
+            raise RuntimeError("执行计划包含数据库断言，但 environments_config.json 缺少 database 配置。")
+        connection: Connection = open_database_connection(database_config)
+        try:
+            for raw_database_assertion in database_assertions:
+                database_assertion: JsonObject = validate_database_assertion(raw_database_assertion, "database_assertion")
+                rows, database_results = execute_database_assertion(connection, database_assertion)
+                assertion_results.extend(database_results)
+                database_name: str = require_string(database_assertion.get("database"), "database_assertion.database")
+                table_name: str = require_string(database_assertion.get("table"), "database_assertion.table")
+                manifest_rows.extend((database_name, table_name, row) for row in rows)
+                database_result_details.append({"database": database_name, "table": table_name, "row_count": len(rows), "assertions": [detail for _, detail in database_results]})
+        finally:
+            connection.close()
+    passed: bool = all(result for result, _ in assertion_results)
+    result: JsonObject = {
+        "id": request.get("id"),
+        "case_ids": request.get("case_ids"),
+        "variant_type": request.get("variant_type"),
+        "started_at": started_at,
+        "method": method,
+        "url": url,
+        "headers": redact(headers),
+        "body": redact(body),
+        "http_status": status,
+        "response_body": redact(parsed_response),
+        "assertions": [{"passed": item_passed, "detail": detail} for item_passed, detail in assertion_results],
+        "database_results": database_result_details,
+        "status": "PASS" if passed else "FAIL",
+    }
+    return result, manifest_rows
+
+
+def apply_dependencies(step: JsonObject, prior_results: dict[str, JsonObject]) -> JsonObject:
+    prepared: JsonObject = copy.deepcopy(step)
+    for raw_dependency in require_list(step.get("dependencies"), "flow_step.dependencies"):
+        dependency: JsonObject = require_object(raw_dependency, "flow_step.dependency")
+        source_step: str = require_string(dependency.get("source_step"), "dependency.source_step")
+        source_result: JsonObject = prior_results[source_step]
+        exists, source_value = extract_path(source_result.get("response_body"), require_string(dependency.get("source_path"), "dependency.source_path"))
+        if not exists:
+            raise LookupError(f"步骤 {source_step} 的响应缺少依赖路径 {dependency.get('source_path')}。")
+        target: str = require_string(dependency.get("target"), "dependency.target")
+        target_path: str = require_string(dependency.get("target_path"), "dependency.target_path")
+        prepared[target] = replace_path(prepared.get(target), target_path, source_value)
+    return prepared
+
+
+def execution_error_result(request: JsonObject, error: Exception) -> JsonObject:
+    return {
+        "id": request.get("id"),
+        "case_ids": request.get("case_ids"),
+        "variant_type": request.get("variant_type"),
+        "status": "EXECUTION_ERROR",
+        "error_type": type(error).__name__,
+        "error": str(error),
+    }
+
+
+def execute_standalone_requests(
+    requests: list[object],
+    environment: JsonObject,
+    database_config: JsonObject | None,
+    token_error_codes: set[str],
+) -> tuple[list[JsonObject], list[tuple[str, str, JsonObject]]]:
+    results: list[JsonObject] = []
+    manifest_rows: list[tuple[str, str, JsonObject]] = []
+    for index, raw_request in enumerate(requests, start=1):
+        request: JsonObject = validate_request(raw_request, f"requests[{index}]")
+        try:
+            result, request_rows = run_request(request, environment, database_config, token_error_codes)
+            results.append(result)
+            manifest_rows.extend(request_rows)
+        except SystemExit:
+            raise
+        except (ConnectionError, LookupError, RuntimeError, TypeError, ValueError) as error:
+            results.append(execution_error_result(request, error))
+    return results, manifest_rows
+
+
+def execute_flows(
+    flows: list[object],
+    environment: JsonObject,
+    database_config: JsonObject | None,
+    token_error_codes: set[str],
+) -> tuple[list[JsonObject], list[tuple[str, str, JsonObject]]]:
+    flow_results: list[JsonObject] = []
+    manifest_rows: list[tuple[str, str, JsonObject]] = []
+    for raw_flow in flows:
+        flow: JsonObject = require_object(raw_flow, "flow")
+        step_results: list[JsonObject] = []
+        prior_results: dict[str, JsonObject] = {}
+        interrupted: bool = False
+        interruption_reason: str = ""
+        for raw_step in require_list(flow.get("steps"), "flow.steps"):
+            step: JsonObject = require_object(raw_step, "flow.step")
+            step_id: str = require_string(step.get("id"), "flow.step.id")
+            if interrupted:
+                step_results.append({"id": step_id, "case_ids": step.get("case_ids"), "status": "NOT_EXECUTED", "reason": interruption_reason})
+                continue
+            try:
+                prepared_step: JsonObject = apply_dependencies(step, prior_results)
+                result, step_rows = run_request(prepared_step, environment, database_config, token_error_codes)
+                step_results.append(result)
+                prior_results[step_id] = result
+                manifest_rows.extend(step_rows)
+                if result.get("status") != "PASS":
+                    interrupted = True
+                    interruption_reason = f"步骤 {step_id} 断言失败。"
+            except SystemExit:
+                raise
+            except (ConnectionError, LookupError, RuntimeError, TypeError, ValueError) as error:
+                error_result: JsonObject = execution_error_result(step, error)
+                step_results.append(error_result)
+                prior_results[step_id] = error_result
+                interrupted = True
+                interruption_reason = f"步骤 {step_id} 执行异常：{error}"
+        flow_results.append(
+            {
+                "id": flow.get("id"),
+                "name": flow.get("name"),
+                "status": "INTERRUPTED" if interrupted else "PASS",
+                "interruption_reason": interruption_reason,
+                "steps": step_results,
+            }
+        )
+    return flow_results, manifest_rows
+
+
+def markdown_json(value: object) -> str:
+    return json.dumps(value, ensure_ascii=False, indent=2)
+
+
+def render_interface_report(results: list[JsonObject], environment_name: str) -> str:
+    executed: list[JsonObject] = [item for item in results if item.get("status") in {"PASS", "FAIL"}]
+    passed_count: int = sum(1 for item in executed if item.get("status") == "PASS")
+    pass_rate: float = (passed_count / len(executed) * 100.0) if executed else 0.0
+    lines: list[str] = [
         "# 单接口测试执行报告",
         "",
-        f"- **生成时间**：{format_datetime(datetime.now())}",
-        "- **测试环境**：鲨域测试环境 (`https://api.test.njxjjt.com/`)",
-        f"- **用例总数**：{len(parsed_cases)}",
-        f"- **成功执行数**：{len(results)}",
-        f"- **待处理用例数**：{len(ignored_cases)}",
-        f"- **测试通过率**：{len([r for r in results if r['passed']])/max(1, len(results))*100:.2f}%",
+        f"- 生成时间：{datetime.now(timezone.utc).isoformat()}",
+        f"- 测试平台：{environment_name}",
+        f"- 计划用例数：{len(results)}",
+        f"- 实际断言用例数：{len(executed)}",
+        f"- 通过率：{pass_rate:.2f}%",
         "",
-        "## 一、 解析与一致性检查清单",
-        "以下用例因文档一致性问题或格式解析失败已被拦截，未在测试环境运行：",
-        "",
-        "| 用例 ID | 用例名称 | 拦截原因 |",
-        "|---|---|---|",
+        "| 请求 ID | Case IDs | 类型 | 状态 | HTTP 状态 |",
+        "|---|---|---|---|---:|",
     ]
-    if not ignored_cases:
-        report_lines.append("| 无 | 无 | 无 |")
-    else:
-        for ig in ignored_cases:
-            reasons_str = "; ".join(ig["reasons"])
-            report_lines.append(f"| {ig['id']} | {ig['name']} | {reasons_str} |")
-            
-    report_lines.extend([
-        "",
-        "## 二、 单元测试执行结果明细",
-        "",
-        "| 用例 ID | 调用接口 | 用例属性 | HTTP 响应码 | 断言结果 |",
-        "|---|---|---|---|---|",
-    ])
-    for r in results:
-        res_str = "🟢 PASS" if r["passed"] else "🔴 FAIL"
-        report_lines.append(f"| {r['id']} | `{r['api']}` | {r['type']} | {r['status']} | {res_str} |")
-        
-    report_lines.extend([
-        "",
-        "## 三、 失败用例快照与归因分析",
-        ""
-    ])
-    failed_results = [r for r in results if not r["passed"]]
-    if not failed_results:
-        report_lines.append("🎉 完美！所有执行用例均通过断言。")
-    else:
-        for f in failed_results:
-            report_lines.extend([
-                f"### {f['id']} - {f['name']}",
-                f"- **接口**：`{f['api']}`",
-                f"- **状态**：{f['status']}",
-                f"- **响应载荷**：",
-                "  ```json",
-                f"  {f['response']}",
-                "  ```",
-                "- **归因解析**：预期响应断言不匹配，触发拦截失败。",
-                ""
-            ])
-            
-    (output_dir / "interface_test_execution_report.md").write_text("\n".join(report_lines), encoding="utf-8")
-    print("Generated unit test report interface_test_execution_report.md")
+    for result in results:
+        lines.append(f"| {result.get('id')} | {', '.join(str(item) for item in result.get('case_ids', []))} | {result.get('variant_type')} | {result.get('status')} | {result.get('http_status', '')} |")
+    for result in results:
+        lines.extend(["", f"## {result.get('id')}", "", "```json", markdown_json(result), "```"])
+    return "\n".join(lines).strip() + "\n"
 
-    # 7. Run Core Flow Integration Test (Section 3.4 & 4.2)
-    # Parse core flow from integration_test_flow.md
-    flow_content = flow_file.read_text(encoding="utf-8")
-    flow_steps = [
-        {"step": 1, "path": "/app/courseRelation", "method": "POST", "name": "courseRelation (看课鉴权与锁客)"},
-        {"step": 2, "path": "/question/submitAnswer", "method": "POST", "name": "submitAnswer (课后答题提交)"},
-        {"step": 3, "path": "/live/reward/receive", "method": "POST", "name": "receive (红包奖励领取)"},
-        {"step": 4, "path": "/live/reward/rewardsuccess", "method": "POST", "name": "rewardsuccess (发奖成功回填)"}
-    ]
-    
-    # Retrieve dynamic IDs for integration test run
-    course_id = resolved_vars.get("DB.project_course_subject.id", 4)
-    redpack_id = resolved_vars.get("DB.redpack_activity_info.id", 7)
-    app_id = resolved_vars.get("DB.redpack_activity_info.app_id", "wx22888d9c788bd40f")
-    corp_id = resolved_vars.get("DB.redpack_activity_info.corp_id", "ww18a9d0bd0914df32")
-    reward_config_id = resolved_vars.get("DB.live_reward_config.id", 1)
-    correct_answer = resolved_vars.get("DB.questions_info.answer", "1")
-    union_id = resolved_vars.get("ENV.unionId", "o0W2n1a2NAp2LXq7--xMKkm6WydY")
-    tenant_id = resolved_vars.get("DB.live_config.tenant_id", 153)
-    customer_id = resolved_vars.get("DB.customer.id", 1)
-    API_DOMAIN = resolved_vars.get("ENV.api_domain", "https://api.test.njxjjt.com")
-    
-    token = env_config.get("environments", [{}])[-1].get("authorization", "afb822e3-9aac-46e7-818e-214ff3e36fd5")
-    headers = {"Authorization": token, "Content-Type": "application/json"}
-    
-    flow_results = []
-    interrupted = False
-    interrupted_step = None
-    interrupted_reason = ""
-    reward_record_id = None
-    
-    for step in flow_steps:
-        if interrupted:
-            flow_results.append({
-                **step,
-                "status": "未执行",
-                "payload": "无",
-                "response": "无",
-                "passed": False
-            })
-            continue
-            
-        # Build payload dynamically based on step
-        payload = {}
-        if step["step"] == 1:
-            payload = {"unionId": union_id, "openId": union_id, "tenantId": tenant_id}
-        elif step["step"] == 2:
-            payload = {"relationId": course_id, "type": 1, "unionId": union_id, "corpId": corp_id, "questionList": [{"customerAnswer": correct_answer}]}
-        elif step["step"] == 3:
-            payload = {"appId": app_id, "openId": union_id, "unionId": union_id, "rewardConfigId": reward_config_id, "watchDuration": 60, "customerId": customer_id}
-        elif step["step"] == 4:
-            payload = {"id": reward_record_id, "status": 1}
-            
-        # Send Request with retry on token expiration
-        for retry in range(2):
-            status, response_body, err = send_request(
-                f"{API_DOMAIN}{step['path']}",
-                step["method"],
-                headers,
-                json.dumps(payload)
-            )
-            if is_token_expired(status, response_body):
-                env_name = "miniapp"
-                if handle_token_expired(env_name, env_file):
-                    # Reload new token and update headers
-                    new_cfg = load_json(env_file)
-                    new_token = ""
-                    for env in new_cfg.get("environments", []):
-                        if env["name"] == env_name:
-                            new_token = env.get("authorization", "")
-                            break
-                    headers["Authorization"] = new_token
-                    print("已更新 Token 并重试集成测试步骤...")
-                    continue
-            break
-        
-        passed = (status == 200 and (not "code" in response_body or '"code":0' in response_body or '"code": 0' in response_body))
-        
-        # Extract record ID from Step 3 response
-        if step["step"] == 3 and passed:
-            try:
-                res_json = json.loads(response_body)
-                reward_record_id = res_json.get("data", {}).get("id")
-                if not reward_record_id:
-                    passed = False
-                    err = "Response JSON lacks data.id column"
-            except Exception as e:
-                passed = False
-                err = f"Failed to parse JSON response: {e}"
-                
-        flow_results.append({
-            **step,
-            "status": str(status),
-            "payload": json.dumps(payload, ensure_ascii=False, indent=2),
-            "response": response_body if not err else f"Execution Error: {err}",
-            "passed": passed
-        })
-        
-        if not passed:
-            interrupted = True
-            interrupted_step = step["step"]
-            interrupted_reason = err if err else f"HTTP response assertions failed with code {status}"
 
-    # 8. Generate Core Flow Report (Section 4.2)
-    flow_report = [
-        "# 核心流程测试报告",
+def render_flow_report(results: list[JsonObject], environment_name: str) -> str:
+    lines: list[str] = [
+        "# 核心流程测试执行报告",
         "",
-        f"- **生成时间**：{format_datetime(datetime.now())}",
-        f"- **流程闭环状态**：{'🟢 闭环成功' if not interrupted else '🔴 中途发生中断'}",
-        ""
+        f"- 生成时间：{datetime.now(timezone.utc).isoformat()}",
+        f"- 测试平台：{environment_name}",
     ]
-    if interrupted:
-        flow_report.append(f"> [!IMPORTANT]\n> **中断发生在第 {interrupted_step} 步** ({flow_steps[interrupted_step-1]['name']})。原因：`{interrupted_reason}`\n")
-        
-    flow_report.extend([
-        "## 一、 核心链路调用详情明细",
-        ""
-    ])
-    for fr in flow_results:
-        res_str = "🟢 PASS" if fr["passed"] else ("🔴 FAIL" if fr["status"] != "未执行" else "⚪ 未执行")
-        flow_report.extend([
-            f"### 步骤 {fr['step']}: {fr['name']}",
-            f"- **请求 URL**：`{fr['method']} https://api.test.njxjjt.com{fr['path']}`",
-            f"- **执行状态**：res_str = \"{res_str}\" (HTTP 响应码: {fr['status']})",
-            "- **发送 Payload**：",
-            "  ```json",
-            f"  {fr['payload']}",
-            "  ```",
-            "- **接口响应体**：",
-            "  ```json",
-            f"  {fr['response']}",
-            "  ```",
-            ""
-        ])
-        
-    flow_report.extend([
-        "## 二、 物理数据验证上下文",
-        "本次测试运行中连接物理库反查并使用的活跃数据项：",
-        "",
-        f"- `course_id`: `{course_id}` (取自 `project_course_subject.id`)",
-        f"- `redpack_id`: `{redpack_id}` (取自 `redpack_activity_info.id`)",
-        f"- `reward_config_id`: `{reward_config_id}` (取自 `live_reward_config.id`)",
-        f"- `correct_answer`: `{correct_answer}` (取自 `questions_info.answer`)",
-        f"- `app_id`: `{app_id}`",
-        f"- `corp_id`: `{corp_id}`"
-    ])
-    
-    (output_dir / "core_flow_test_execution_report.md").write_text("\n".join(flow_report), encoding="utf-8")
-    print("Generated integration flow report core_flow_test_execution_report.md")
+    if not results:
+        lines.extend(["", "- 本次计划未定义核心流程。"])
+    for result in results:
+        lines.extend(["", f"## {result.get('name')}", "", f"- 流程 ID：{result.get('id')}", f"- 状态：{result.get('status')}", f"- 中断原因：{result.get('interruption_reason') or '无'}", "", "```json", markdown_json(result), "```"])
+    return "\n".join(lines).strip() + "\n"
+
+
+def append_manifest(path: Path, rows: list[tuple[str, str, JsonObject]]) -> None:
+    if not rows:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    existing: str = path.read_text(encoding="utf-8-sig") if path.exists() else "# 测试数据台账\n"
+    execution_lines: list[str] = ["", f"## 执行校验 {datetime.now(timezone.utc).isoformat()}"]
+    execution_lines.extend(
+        f"{database}:{table}:【{json.dumps(row, ensure_ascii=False, separators=(',', ':'))}】"
+        for database, table, row in rows
+    )
+    path.write_text(existing.rstrip() + "\n" + "\n".join(execution_lines) + "\n", encoding="utf-8", newline="\n")
+
+
+def write_reports(output_dir: Path, interface_report: str, flow_report: str) -> None:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    (output_dir / "interface_test_execution_report.md").write_text(interface_report, encoding="utf-8", newline="\n")
+    (output_dir / "core_flow_test_execution_report.md").write_text(flow_report, encoding="utf-8", newline="\n")
+
+
+def main() -> int:
+    arguments: argparse.Namespace = parse_arguments()
+    workspace: Path = Path(arguments.workspace).resolve()
+    if not workspace.is_dir():
+        raise NotADirectoryError(f"工作区不存在：{workspace}")
+    plan_path: Path = resolve_workspace_path(workspace, arguments.plan, "--plan")
+    confirmation_path: Path = resolve_workspace_path(workspace, arguments.confirmation, "--confirmation")
+    environment_path: Path = resolve_workspace_path(workspace, arguments.environment_config, "--environment-config")
+    output_dir: Path = resolve_workspace_path(workspace, arguments.output_dir, "--output-dir")
+    manifest_path: Path = resolve_workspace_path(workspace, arguments.manifest, "--manifest")
+    plan: JsonObject = read_json_object(plan_path, "execution_plan")
+    confirmation: JsonObject = read_json_object(confirmation_path, "testcase_confirmation")
+    environment_config: JsonObject = read_json_object(environment_path, "environment_config")
+    validate_plan(plan, confirmation)
+    environment: JsonObject = select_environment(environment_config, arguments.environment_name)
+    raw_token_error_codes: list[object] = require_list(plan.get("token_error_codes", []), "plan.token_error_codes")
+    token_error_codes: set[str] = {require_string(item, "plan.token_error_codes[]") for item in raw_token_error_codes}
+    raw_database_config: object = environment_config.get("database")
+    database_config: JsonObject | None = require_object(raw_database_config, "environment_config.database") if raw_database_config is not None else None
+    interface_results, interface_rows = execute_standalone_requests(
+        require_list(plan.get("requests"), "plan.requests"), environment, database_config, token_error_codes
+    )
+    flow_results, flow_rows = execute_flows(
+        require_list(plan.get("flows"), "plan.flows"), environment, database_config, token_error_codes
+    )
+    write_reports(
+        output_dir,
+        render_interface_report(interface_results, arguments.environment_name),
+        render_flow_report(flow_results, arguments.environment_name),
+    )
+    append_manifest(manifest_path, interface_rows + flow_rows)
+    has_execution_errors: bool = any(result.get("status") == "EXECUTION_ERROR" for result in interface_results)
+    has_flow_errors: bool = any(result.get("status") == "INTERRUPTED" for result in flow_results)
+    has_failures: bool = any(result.get("status") == "FAIL" for result in interface_results)
+    return 1 if has_execution_errors or has_flow_errors or has_failures else 0
+
 
 if __name__ == "__main__":
-    main()
+    try:
+        raise SystemExit(main())
+    except (ConnectionError, FileNotFoundError, LookupError, NotADirectoryError, PermissionError, RuntimeError, TypeError, ValueError) as error:
+        print(f"[EXECUTION_ERROR] {type(error).__name__}: {error}", file=sys.stderr)
+        raise SystemExit(2) from error

@@ -15,10 +15,12 @@
 
 - A：SQL 明确包含完整 `schema.table`。
 - B：代码表名、数据归属和元数据唯一匹配。
-- C：Entity 与平台已确认，但元数据未唯一匹配；输出 `未知库.table`。
-- D：只有 Mapper/裸表名，平台或元数据未确认；输出 `未知库.table`。
+- C：Entity 与平台已确认，但元数据未唯一匹配；只输出到 `unresolved_tables.md`。
+- D：只有 Mapper/裸表名，平台或元数据未确认；只输出到 `unresolved_tables.md`。
 
 多库同名、代码与元数据不一致时不授予单一等级，列出全部候选并标记人工确认。
+
+`table_information.md` 只允许包含指定连接中唯一匹配的 A/B 级表。禁止跨连接兜底匹配。
 
 ## 表证据
 

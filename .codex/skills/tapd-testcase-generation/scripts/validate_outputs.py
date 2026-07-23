@@ -1,0 +1,356 @@
+"""Validate generated testcase artifacts against the skill contract."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import sys
+from pathlib import Path
+from typing import Sequence, TypeAlias
+
+
+JsonObject: TypeAlias = dict[str, object]
+MarkdownCase: TypeAlias = dict[str, object]
+
+CASE_HEADING_PATTERN: re.Pattern[str] = re.compile(
+    r"^###\s+(TC\d{3})\s+-\s+(.+)$",
+    re.MULTILINE,
+)
+FIELD_PATTERN: re.Pattern[str] = re.compile(r"^- \*\*([^*]+)\*\*：(.*)$", re.MULTILINE)
+SECTION_PATTERN: re.Pattern[str] = re.compile(r"^##\s+[一二三]、(P[012])\b", re.MULTILINE)
+LIST_ITEM_PATTERN: re.Pattern[str] = re.compile(r"^\s+\d+\.\s+(.+)$", re.MULTILINE)
+
+REQUIRED_MARKDOWN_FIELDS: tuple[str, ...] = (
+    "用例名称",
+    "用例目录",
+    "需求ID",
+    "用例类型",
+    "用例状态",
+    "用例等级",
+    "所属端/角色/系统",
+    "功能模块",
+    "前置条件",
+    "测试步骤",
+    "预期结果",
+    "关联需求点",
+    "备注",
+)
+REQUIRED_QUESTION_HEADER: str = (
+    "| 编号 | 关联功能点/模块 | 问题类型 | 具体问题描述 | 来源 | 建议确认方 |"
+)
+ROOT_KEYS: frozenset[str] = frozenset({"story", "total_count", "cases"})
+STORY_KEYS: frozenset[str] = frozenset({"workspace_id", "id", "short_id", "name"})
+CASE_KEYS: frozenset[str] = frozenset(
+    {
+        "case_id",
+        "title",
+        "directory",
+        "requirement_id",
+        "case_type",
+        "case_status",
+        "priority",
+        "system_scope",
+        "module",
+        "precondition",
+        "steps",
+        "expected_results",
+        "requirement_points",
+        "remarks",
+    }
+)
+CASE_TYPES: frozenset[str] = frozenset({"功能测试", "性能测试", "安全性测试"})
+CASE_STATUSES: frozenset[str] = frozenset({"正常"})
+PRIORITIES: frozenset[str] = frozenset({"P0", "P1", "P2"})
+PLACEHOLDERS: tuple[str, ...] = (
+    "TODO",
+    "[Given]",
+    "[When]",
+    "[Then]",
+    "[业务目录]",
+    "[功能模块]",
+    "[TAPD short_id]",
+)
+
+
+def read_text(path: Path) -> str:
+    try:
+        content: str = path.read_text(encoding="utf-8-sig")
+    except OSError as error:
+        raise ValueError(f"无法读取文件 {path}: {error}") from error
+    if not content.strip():
+        raise ValueError(f"文件不能为空: {path}")
+    return content
+
+
+def read_json_object(path: Path) -> JsonObject:
+    content: str = read_text(path)
+    try:
+        value: object = json.loads(content)
+    except json.JSONDecodeError as error:
+        raise ValueError(f"JSON 格式错误 {path}: {error}") from error
+    if not isinstance(value, dict):
+        raise ValueError(f"JSON 根节点必须是对象: {path}")
+    return value
+
+
+def require_exact_keys(value: JsonObject, expected: frozenset[str], field_name: str) -> None:
+    actual: frozenset[str] = frozenset(value.keys())
+    missing: list[str] = sorted(expected - actual)
+    extra: list[str] = sorted(actual - expected)
+    if missing or extra:
+        raise ValueError(
+            f"{field_name} 字段不符合契约；缺失={missing}，额外={extra}。"
+        )
+
+
+def require_object(value: object, field_name: str) -> JsonObject:
+    if not isinstance(value, dict):
+        raise ValueError(f"{field_name} 必须是对象。")
+    return value
+
+
+def require_list(value: object, field_name: str) -> list[object]:
+    if not isinstance(value, list):
+        raise ValueError(f"{field_name} 必须是数组。")
+    return value
+
+
+def require_string(value: object, field_name: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{field_name} 必须是非空字符串。")
+    normalized: str = value.strip()
+    for placeholder in PLACEHOLDERS:
+        if placeholder in normalized:
+            raise ValueError(f"{field_name} 包含占位符 {placeholder}。")
+    return normalized
+
+
+def require_string_list(value: object, field_name: str) -> list[str]:
+    raw_items: list[object] = require_list(value, field_name)
+    if not raw_items:
+        raise ValueError(f"{field_name} 不能为空数组。")
+    return [
+        require_string(item, f"{field_name}[{index}]")
+        for index, item in enumerate(raw_items)
+    ]
+
+
+def section_priority(markdown: str, position: int) -> str:
+    matches: list[re.Match[str]] = [
+        match for match in SECTION_PATTERN.finditer(markdown) if match.start() < position
+    ]
+    if not matches:
+        raise ValueError(f"位置 {position} 的用例不在 P0/P1/P2 章节中。")
+    return matches[-1].group(1)
+
+
+def extract_numbered_list(block: str, field_name: str, case_id: str) -> list[str]:
+    marker: str = f"- **{field_name}**："
+    start: int = block.find(marker)
+    if start < 0:
+        raise ValueError(f"{case_id} 缺少字段 {field_name}。")
+    remainder: str = block[start + len(marker) :]
+    next_field: int = remainder.find("\n- **")
+    section: str = remainder if next_field < 0 else remainder[:next_field]
+    items: list[str] = [match.group(1).strip() for match in LIST_ITEM_PATTERN.finditer(section)]
+    if not items:
+        raise ValueError(f"{case_id}.{field_name} 必须包含非空有序列表。")
+    return items
+
+
+def parse_markdown_cases(markdown: str) -> list[MarkdownCase]:
+    headings: list[re.Match[str]] = list(CASE_HEADING_PATTERN.finditer(markdown))
+    if not headings:
+        raise ValueError("test_cases.md 未找到任何 `### TCxxx - 标题` 用例。")
+
+    cases: list[MarkdownCase] = []
+    for index, heading in enumerate(headings):
+        block_end: int = headings[index + 1].start() if index + 1 < len(headings) else len(markdown)
+        block: str = markdown[heading.end() : block_end]
+        fields: dict[str, str] = {
+            match.group(1).strip(): match.group(2).strip()
+            for match in FIELD_PATTERN.finditer(block)
+        }
+        case_id: str = heading.group(1)
+        for field_name in REQUIRED_MARKDOWN_FIELDS:
+            if field_name not in fields:
+                raise ValueError(f"{case_id} 缺少字段 {field_name}。")
+        for field_name in REQUIRED_MARKDOWN_FIELDS:
+            if field_name not in {"测试步骤", "预期结果"}:
+                require_string(fields[field_name], f"{case_id}.{field_name}")
+
+        title: str = heading.group(2).strip()
+        if fields["用例名称"] != title:
+            raise ValueError(f"{case_id}.用例名称必须与标题完全一致。")
+        priority: str = fields["用例等级"]
+        if priority != section_priority(markdown, heading.start()):
+            raise ValueError(f"{case_id}.用例等级与所在章节不一致。")
+
+        cases.append(
+            {
+                "case_id": case_id,
+                "title": title,
+                "directory": fields["用例目录"],
+                "requirement_id": fields["需求ID"],
+                "case_type": fields["用例类型"],
+                "case_status": fields["用例状态"],
+                "priority": priority,
+                "system_scope": fields["所属端/角色/系统"],
+                "module": fields["功能模块"],
+                "precondition": fields["前置条件"],
+                "steps": extract_numbered_list(block, "测试步骤", case_id),
+                "expected_results": extract_numbered_list(block, "预期结果", case_id),
+                "requirement_points": fields["关联需求点"],
+                "remarks": fields["备注"],
+            }
+        )
+    return cases
+
+
+def require_markdown_string(case: MarkdownCase, field_name: str, case_id: str) -> str:
+    return require_string(case.get(field_name), f"{case_id}.{field_name}")
+
+
+def require_markdown_list(case: MarkdownCase, field_name: str, case_id: str) -> list[str]:
+    return require_string_list(case.get(field_name), f"{case_id}.{field_name}")
+
+
+def validate_case_sequence(markdown_cases: list[MarkdownCase]) -> None:
+    for index, case in enumerate(markdown_cases, start=1):
+        expected: str = f"TC{index:03d}"
+        actual: str = require_markdown_string(case, "case_id", expected)
+        if actual != expected:
+            raise ValueError(f"用例编号不连续；期望 {expected}，实际 {actual}。")
+
+
+def validate_json_case(
+    raw_case: object,
+    markdown_case: MarkdownCase,
+    index: int,
+) -> None:
+    field_prefix: str = f"cases[{index}]"
+    case: JsonObject = require_object(raw_case, field_prefix)
+    require_exact_keys(case, CASE_KEYS, field_prefix)
+    case_id: str = require_string(case.get("case_id"), f"{field_prefix}.case_id")
+
+    scalar_fields: tuple[str, ...] = (
+        "case_id",
+        "title",
+        "directory",
+        "requirement_id",
+        "case_type",
+        "case_status",
+        "priority",
+        "system_scope",
+        "module",
+        "precondition",
+        "remarks",
+    )
+    for field_name in scalar_fields:
+        json_value: str = require_string(case.get(field_name), f"{field_prefix}.{field_name}")
+        markdown_value: str = require_markdown_string(markdown_case, field_name, case_id)
+        if json_value != markdown_value:
+            raise ValueError(
+                f"{case_id}.{field_name} 在 Markdown 与 JSON 中不一致。"
+            )
+
+    case_type: str = require_string(case.get("case_type"), f"{field_prefix}.case_type")
+    case_status: str = require_string(case.get("case_status"), f"{field_prefix}.case_status")
+    priority: str = require_string(case.get("priority"), f"{field_prefix}.priority")
+    if case_type not in CASE_TYPES:
+        raise ValueError(f"{case_id}.case_type 不合法: {case_type}")
+    if case_status not in CASE_STATUSES:
+        raise ValueError(f"{case_id}.case_status 不合法: {case_status}")
+    if priority not in PRIORITIES:
+        raise ValueError(f"{case_id}.priority 不合法: {priority}")
+
+    for field_name in ("steps", "expected_results"):
+        json_values: list[str] = require_string_list(
+            case.get(field_name),
+            f"{field_prefix}.{field_name}",
+        )
+        markdown_values: list[str] = require_markdown_list(markdown_case, field_name, case_id)
+        if json_values != markdown_values:
+            raise ValueError(
+                f"{case_id}.{field_name} 在 Markdown 与 JSON 中不一致。"
+            )
+
+    requirement_points: list[str] = require_string_list(
+        case.get("requirement_points"),
+        f"{field_prefix}.requirement_points",
+    )
+    markdown_requirement_point: str = require_markdown_string(
+        markdown_case,
+        "requirement_points",
+        case_id,
+    )
+    if markdown_requirement_point not in requirement_points:
+        raise ValueError(f"{case_id}.requirement_points 未包含 Markdown 关联需求点。")
+
+
+def validate_json_payload(payload: JsonObject, markdown_cases: list[MarkdownCase]) -> None:
+    require_exact_keys(payload, ROOT_KEYS, "tapd_cases.json")
+    story: JsonObject = require_object(payload.get("story"), "story")
+    require_exact_keys(story, STORY_KEYS, "story")
+    for field_name in sorted(STORY_KEYS):
+        require_string(story.get(field_name), f"story.{field_name}")
+
+    raw_total_count: object = payload.get("total_count")
+    if isinstance(raw_total_count, bool) or not isinstance(raw_total_count, int):
+        raise ValueError("total_count 必须是整数。")
+    raw_cases: list[object] = require_list(payload.get("cases"), "cases")
+    if raw_total_count != len(raw_cases):
+        raise ValueError("total_count 与 cases 数量不一致。")
+    if len(raw_cases) != len(markdown_cases):
+        raise ValueError("test_cases.md 与 tapd_cases.json 用例数量不一致。")
+    if not raw_cases:
+        raise ValueError("cases 不能为空。")
+
+    for index, raw_case in enumerate(raw_cases):
+        validate_json_case(raw_case, markdown_cases[index], index)
+
+
+def validate_questions(markdown: str) -> None:
+    if not markdown.startswith("# 待确认问题清单"):
+        raise ValueError("questions.md 缺少固定标题 `# 待确认问题清单`。")
+    if REQUIRED_QUESTION_HEADER not in markdown:
+        raise ValueError("questions.md 表头不符合唯一契约。")
+
+
+def validate_output_directory(output_directory: Path) -> None:
+    test_cases_path: Path = output_directory / "test_cases.md"
+    questions_path: Path = output_directory / "questions.md"
+    tapd_cases_path: Path = output_directory / "tapd_cases.json"
+
+    test_cases_markdown: str = read_text(test_cases_path)
+    questions_markdown: str = read_text(questions_path)
+    payload: JsonObject = read_json_object(tapd_cases_path)
+
+    markdown_cases: list[MarkdownCase] = parse_markdown_cases(test_cases_markdown)
+    validate_case_sequence(markdown_cases)
+    validate_questions(questions_markdown)
+    validate_json_payload(payload, markdown_cases)
+
+
+def parse_arguments(argv: Sequence[str]) -> argparse.Namespace:
+    parser: argparse.ArgumentParser = argparse.ArgumentParser(
+        description="Validate tapd-testcase-generation output artifacts."
+    )
+    parser.add_argument("output_directory", type=Path)
+    return parser.parse_args(argv)
+
+
+def main(argv: Sequence[str]) -> int:
+    arguments: argparse.Namespace = parse_arguments(argv)
+    try:
+        validate_output_directory(arguments.output_directory)
+    except ValueError as error:
+        print(f"Validation failed: {error}", file=sys.stderr)
+        return 1
+    print("Validation passed: testcase artifacts match the contract.")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

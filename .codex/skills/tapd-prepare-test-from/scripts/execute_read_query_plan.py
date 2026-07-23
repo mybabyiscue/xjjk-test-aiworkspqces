@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import re
 import time
 from datetime import date, datetime
 from decimal import Decimal
@@ -69,7 +70,7 @@ def connect_with_retry(config: JsonObject, attempts: int) -> Connection:
                 user=require_string(config.get("username"), "connection.username"),
                 password=require_string(config.get("password"), "connection.password"),
                 charset="utf8mb4",
-                autocommit=True,
+                autocommit=False,
                 cursorclass=DictCursor,
                 connect_timeout=5,
                 read_timeout=60,
@@ -88,12 +89,19 @@ def connect_with_retry(config: JsonObject, attempts: int) -> Connection:
 
 def validate_select(sql: str) -> None:
     normalized: str = sql.strip().lower()
-    if not normalized.startswith("select "):
+    if re.match(r"^select\s", normalized) is None:
         raise QueryPlanError("Only SELECT statements are allowed")
-    forbidden: tuple[str, ...] = (" insert ", " update ", " delete ", " drop ", " alter ", " truncate ", " replace ", ";")
-    padded: str = f" {normalized} "
-    if any(token in padded for token in forbidden):
-        raise QueryPlanError("Query contains a forbidden statement token")
+    if any(marker in normalized for marker in (";", "--", "#", "/*", "*/")):
+        raise QueryPlanError("Query contains a forbidden delimiter or comment")
+    forbidden_patterns: tuple[str, ...] = (
+        r"\b(insert|update|delete|drop|alter|truncate|replace|call|execute|handler)\b",
+        r"\binto\s+(outfile|dumpfile)\b",
+        r"\bfor\s+update\b",
+        r"\block\s+in\s+share\s+mode\b",
+        r"\b(get_lock|release_lock|sleep|benchmark)\s*\(",
+    )
+    if any(re.search(pattern, normalized) is not None for pattern in forbidden_patterns):
+        raise QueryPlanError("Query contains a forbidden operation")
 
 
 def execute_query(connection: Connection, sql: str, attempts: int, query_reference: str) -> list[JsonObject]:
@@ -182,8 +190,12 @@ def main() -> int:
     config: JsonObject = select_connection(connections, arguments.connection_name)
     connection: Connection = connect_with_retry(config, 3)
     try:
+        with connection.cursor() as cursor:
+            cursor.execute("SET TRANSACTION READ ONLY")
+        connection.begin()
         records: list[JsonObject] = build_records(connection, arguments.connection_name, plan)
     finally:
+        connection.rollback()
         connection.close()
     write_outputs(records, Path(arguments.output), Path(arguments.manifest))
     print(json.dumps({"query_count": len(records), "row_count": sum(int(item["row_count"]) for item in records)}, ensure_ascii=False))

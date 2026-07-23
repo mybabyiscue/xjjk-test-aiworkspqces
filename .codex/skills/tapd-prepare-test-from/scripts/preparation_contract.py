@@ -13,6 +13,8 @@ PARAMETER_SOURCE_TYPES: frozenset[str] = frozenset({"database", "upstream_respon
 NON_INTERFACE_CLASSIFICATIONS: frozenset[str] = frozenset({"ui_only", "blocked"})
 VARIANT_TYPES: frozenset[str] = frozenset({"positive", "negative"})
 NEGATIVE_VARIANT_POLICIES: frozenset[str] = frozenset({"covered", "no_verifiable_validation_rule"})
+CASE_TYPES: frozenset[str] = frozenset({"功能测试", "性能测试", "安全性测试"})
+CASE_PRIORITIES: frozenset[str] = frozenset({"P0", "P1", "P2"})
 
 
 class PreparationError(RuntimeError):
@@ -64,15 +66,43 @@ def require_list(value: object, field_name: str) -> list[object]:
     return value
 
 
+def require_string_list(value: object, field_name: str) -> list[str]:
+    items: list[object] = require_list(value, field_name)
+    if not items:
+        raise PreparationError(f"字段 {field_name} 必须是非空字符串数组。")
+    result: list[str] = []
+    for index, item in enumerate(items, start=1):
+        result.append(require_string(item, f"{field_name}[{index}]"))
+    return result
+
+
 def load_cases(path: Path) -> list[JsonObject]:
     payload: JsonObject = read_json_object(path)
     raw_cases: list[object] = require_list(payload.get("cases"), "cases")
+    if payload.get("total_count") != len(raw_cases):
+        raise PreparationError("tapd_cases.json.total_count 必须等于 cases 数量。")
     cases: list[JsonObject] = []
     for index, raw_case in enumerate(raw_cases, start=1):
         case: JsonObject = require_object(raw_case, f"cases[{index}]")
+        expected_case_id: str = f"TC{index:03d}"
+        if require_string(case.get("case_id"), f"cases[{index}].case_id") != expected_case_id:
+            raise PreparationError(f"cases[{index}].case_id 必须为 {expected_case_id}。")
         require_string(case.get("title"), f"cases[{index}].title")
         require_string(case.get("directory"), f"cases[{index}].directory")
         require_string(case.get("requirement_id"), f"cases[{index}].requirement_id")
+        case_type: str = require_string(case.get("case_type"), f"cases[{index}].case_type")
+        if case_type not in CASE_TYPES:
+            raise PreparationError(f"cases[{index}].case_type 不合法。")
+        if require_string(case.get("case_status"), f"cases[{index}].case_status") != "正常":
+            raise PreparationError(f"cases[{index}].case_status 必须为正常。")
+        priority: str = require_string(case.get("priority"), f"cases[{index}].priority")
+        if priority not in CASE_PRIORITIES:
+            raise PreparationError(f"cases[{index}].priority 不合法。")
+        for name in ("system_scope", "module", "precondition", "remarks"):
+            require_string(case.get(name), f"cases[{index}].{name}")
+        require_string_list(case.get("steps"), f"cases[{index}].steps")
+        require_string_list(case.get("expected_results"), f"cases[{index}].expected_results")
+        require_string_list(case.get("requirement_points"), f"cases[{index}].requirement_points")
         cases.append(case)
     return cases
 
@@ -123,6 +153,8 @@ def validation_errors(assessment: JsonObject, cases: list[JsonObject], snapshot:
             errors.append("assessment.source.testcase_hash 与确认文件不一致。")
         if source.get("code_review_run_id") != confirmation.get("code_review_run_id"):
             errors.append("assessment.source.code_review_run_id 与确认文件不一致。")
+        if source.get("input_hashes") != snapshot.get("input_hashes"):
+            errors.append("assessment.source.input_hashes 与确认输入快照不一致。")
     expected_keys: set[str] = {case_key(index) for index in range(1, len(cases) + 1)}
     raw_catalog: object = assessment.get("case_catalog")
     if not isinstance(raw_catalog, list) or {item.get("case_key") for item in raw_catalog if isinstance(item, dict)} != expected_keys:

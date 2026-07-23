@@ -1,123 +1,161 @@
 ---
 name: tapd-code-source-review
-description: 作为一个代码拉取、疑问销号、业务多层审计与测试用例证据提取的一站式助手。包含基于测试用例的参数提取及过滤、平台数据库表元数据（/xjjk-yewu-sql）绑定，生成单元测试接口、核心流程接口与表信息 3 大定制文档，并负责测试用例最终审批与知识沉淀。
+description: 拉取并人工确认 TAPD 需求相关代码源，使用 CodeGraph、源码注解和指定 MySQL 平台元数据生成可追溯的接口、调用链、数据表及代码审查证据。用于已有 output/test_cases.md、requirement.md 和 questions.md，需要执行代码源门禁、平台绑定、疑问销号、证据审查、最终审批或知识沉淀的场景。
 ---
 
-# TAPD 代码源审查与测试用例证据分析 (重构合并版)
+# TAPD Code Source Review
 
-## 1. 核心角色与职责
+## 核心原则
 
-*   **角色**：代码拉取、疑问审计与用例证据闭环确认的超级助手。
-*   **强约束门禁**：本技能在启动时必须满足：
-    1.  **代码路径**：由用户提供至少一个或多个 `http://` 或 `https://` 的 Git 仓库或 ZIP 源码包路径，以及对应的分支（使用 `--code-url` 命令行参数）。如无代码路径，**立即报错并停止运行**。
-    2.  **前置用例**：本地工作区必须已生成结构化测试用例文档 `output/test_cases.md`。如缺失，**立即报错熔断**。
-    3.  **CodeGraph 环境**：`codegraph` CLI 必须可执行，且 `~/.codex/config.toml` 中必须存在已启用的 `[mcp_servers.codegraph]` 注册。任一条件不满足时，**立即停止运行**，提示用户执行 `scripts/setup_codegraph.ps1`，并在安装注册完成后重启 Codex；禁止在审查流程中静默安装或降级继续。
-*   **核心定位**：专职执行单/多源码仓库的拉取隔离、疑问销号、基于用例关键字及物理平台元数据的库表与接口强过滤扫描、分类生成 3 大证据文档、用例最终确认以及经验知识库沉淀。
+- 只使用真实源码、CodeGraph 和用户确认平台的元数据作为证据。
+- 测试用例已包含真实路由时按路由根强过滤；需求阶段未提供路由时，按业务词召回并仅保留达到既有评分门槛且绑定到用例的入口。
+- 所有中间结果写入带 ID 的 `runs/` 目录；禁止把 `latest/` 当作工作目录。
+- 任一代码源失败、CodeGraph 不健康、代码源未审批、平台未确认、疑问未处理或元数据缺失时立即失败。
+- HTTP Method 只来自服务端框架注解。表字段只来自指定连接的元数据精确匹配。
+- 不生成 Mock 数据或推测字段，不修改业务源码。
 
----
+执行前阅读以下契约：
 
-## 2. 职责范围与输入输出
+- [输入门禁](references/gate-rules.md)
+- [代码获取](references/fetch-rules.md)
+- [初步代码审查](references/review-rules.md)
+- [证据契约](references/evidence-contract.md)
+- [证据与增量规则](references/evidence-rules.md)
+- [表解析规则](references/table-resolution-rules.md)
+- [测试数据安全](references/test-data-safety-rules.md)
+- [输出契约](references/output-contract.md)
 
-*   **输入依赖**：
-    1.  用户提供的单/多个源码仓库路径及分支（`--code-url` 命令行参数）。
-    2.  `output/requirement.md`（结构化需求文档）。
-    3.  `output/questions.md`（需求疑问追踪清单）。
-    5.  `/xjjk-yewu-sql` 的缓存元数据文件 `state/documents/metadata_document.json` **[必须]**。
-    6.  微服务网关配置文件（如 `bootstrap.yml`, 网关模块 `.yml`）或前端 API 请求管理器 **[可选，若多微服务架构则推荐]**。
-*   **输出产物**：
-    1.  `output/code_sources/cache/<repo_name>/`（多仓库隔离代码缓存）。
-    2.  `output/code_review/runs/<review_run_id>/`（保存当前批次的代码审计及证据提取产物）。
-    3.  `output/code_review/latest/`（存放最新版本的分析结果报告）：
-        *   unit_test_interfaces.md：**单元测试与接口测试映射文档**（将每个结构化测试用例映射到真实的后端 API 接口，输出包含 DTO 请求体字段在内的详细参数说明，并单独归纳无法进行接口测试的纯前端/播放器交互测试点，用于开发单测和接口测试对齐）。
-        *   `core_process_interfaces.md`：**核心流程接口文档**（包含业务核心步骤说明，且已强过滤去除外部 Mock、Maven 及参数为“无”的辅助接口，仅列出真实后端含参数 API 与 DTO 递归属性）。
-        *   `table_information.md`：**表信息文档**（强关联测试用例，完全来自 `/xjjk-yewu-sql` 所选平台缓存元数据中得到的库名、表名、表物理注释与字段级别详情说明）。
-        *   `code_review_findings.md`：扫描出的硬编码/坏味道缺陷清单。
-        *   `issue_tracking.md`：代码缺陷闭环跟踪状态。
-        *   `incremental_plan.md`：增量/全量扫描计划。
-        *   `change_summary.md`：服务代码变更摘要。
-    4.  `output/latest/testcase_confirmation.json`：测试用例与证据最终确认门禁状态（在用户最终审批通过后生成）。
-    5.  工作区 `knowledge/EXP-xxx.md` 与 `knowledge/index.json`：测试经验模式沉淀（用户明确通过后生成）。
+## 必要输入
 
----
+- 用户提供的一个或多个 `<HTTPS Git URL>#<branch>` 或 HTTPS ZIP URL。
+- `output/requirement.md`
+- `output/questions.md`
+- `output/test_cases.md`
+- `.codex/skills/xjjk-yewu-sql/state/documents/metadata_document.json`
+- 可用的 CodeGraph CLI 及已启用的 MCP 注册。
 
-## 3. 工作流程与控制门禁
+## 唯一执行流程
 
-本技能遵循严格的步骤与挂起门禁：
+所有命令从工作区根目录执行。
 
-### 第一步：前置校验与拉取 (Check & Fetch)
-1.  **参数、文件与 CodeGraph 环境校验**：检查是否有 `--code-url`，检查 `output/test_cases.md` 是否存在，并运行 `scripts/codegraph_support.py` 的严格环境门禁。若 CLI 缺失或 MCP 未注册/未启用，立即停止并要求执行独立安装脚本及重启 Codex。
-2.  **隔离克隆、逐服务索引与网关路由侦测**：在 `output/code_sources/cache/<repo_name>/` 安全拉取并更新各个仓库代码。在 `source_manifest.json` 中载入每个仓库的服务名称、URL、分支及 Commit ID。仅遍历该 Manifest 中本次成功拉取的服务：不存在 `.codegraph/codegraph.db` 时执行 `codegraph init`，已存在时执行 `codegraph sync`，随后必须通过 `codegraph status` 健康检查；任一服务索引失败必须报错停止，禁止吞错或跳过。
-        *   **网关前缀探测**：自动检索网关配置模块（如 `gateway`）或微服务的路由配置文件，解析出每个微服务绑定的**网关请求前缀**（如 `/course/mp`），并将其回写至 `source_manifest.json` 中的 `gateway_prefix` 字段。
+### 1. 创建代码源批次
 
-### 第二步：所属平台确认 (Platform Selector Gate)
-1.  **列出平台与微服务**：读取 `/xjjk-yewu-sql` 的 `metadata_document.json` 获取所有可用数据库连接。列出检测到的所有微服务。
-2.  **提问交互 (极简模式)**：在对话中提供清晰的选择题或选项提示用户：
-    *   **选项 A (推荐)**：所有服务共用同一个数据库连接（如“鲨域测试”）。
-    *   **选项 B (多分流)**：服务连接不同的数据库，由用户用自然语言告知映射关系（如“course用鲨域测试，member用丝路测试”）。
-3.  **自动更新 Manifest**：根据用户的对话反馈，AI 代理自动在后台解析并更新 `source_manifest.json` 中各个服务的 `platform` 属性，无需用户手动在命令行传入。后续表结构提取将严格以此绑定进行库表过滤。
-
-### 第三步：疑问销号与中断门禁 (Questions Halt Gate)
-1.  优先遍历 `output/questions.md` 里的所有条目，在克隆出的代码目录下检索对应安全逻辑或业务实现证据。
-2.  **熔断判定**：如果存在任何代码逻辑缺失或疑似逻辑缺陷的问题，**必须立即中止运行（Halt）**，在对话中高亮打印这些问题，并等待用户给出指示（如 A. 忽略继续；B. 重新拉取）。在用户明确指示前，**绝对不允许**往下执行。
-
-### 第四步：用例证据提取与三大文档生成 (Evidence Scan)
-疑问销号通过（或用户忽略）后，执行以下步骤：
-1.  **用例特征提取**：读取并解析 `test_cases.md` 得到用例步骤中的 URL、路径段与核心中英文业务词。
-2.  **执行扫描提取与路由拼接**：运行扫描脚本，将用户指定的 **平台名称** 和 **用例特征白名单** 作为过滤参数：
-        *   **强关联过滤**：抛弃任何与测试用例、核心需求无直接关系的其他模块接口与库表，确保接口与表“不要出现不符合本次需求的项目”。
-        *   **网关路由完整拼接**：解析出的控制器 API 路径必须**强制与第一步中侦测到的网关前缀（`gateway_prefix`）进行拼接**，形成用于测试的完整路径（例如，把 `@PostMapping("/live/goods/save")` 拼装为 `/course/mp/live/goods/save`），禁止漏掉网关前缀。
-        *   **接口请求方法（HTTP Method）的唯一判定标准**：必须且只能通过解析 Java 源代码中对应的 Spring Web 注解确定。**严禁根据接口路径包含 "delete", "save" 或业务意图主观推测 HTTP 方法。**
-            *   若注解为 `@GetMapping` -> 必须为 `GET`；
-            *   若注解为 `@PostMapping` -> 必须为 `POST`；
-            *   若注解为 `@PutMapping` -> 必须为 `PUT`；
-            *   若注解为 `@DeleteMapping` -> 必须为 `DELETE`；
-            *   若注解为 `@RequestMapping` -> 根据其 `method` 属性进行解析，如无则默认支持全部。
-        *   **公共必填 Header 提取**：扫描前端网络拦截器（如 `request.ts`, `http.js`），自动抓取鉴权之外的自定义必填头（例如 `sysType`）及动态签名规则，标注在接口文档的 Header 部分。
-        *   **接口参数详细解析**：对扫描到的接口，解析其参数位置（Query/Path/Body/Header）、必填状态、Swagger（@ApiParam/@Schema）或 Javadoc 中的 `@param` 描述。
-        *   **RequestBody DTO 展开**：如果参数是 `@RequestBody` 复杂对象，自动在代码库中定位其 DTO 类定义，将 DTO 的各个字段及描述作为子参数树状列出。
- 3.  **生成 3 个文档**：分类写出 `unit_test_interfaces.md` (单测接口 - 使用拼接后的完整路由)、`core_process_interfaces.md` (生产核心接口 - 包含真实路由与必填 Headers，需在头部追加核心业务步骤，且强过滤去除无参数与Mock接口)、`table_information.md` (物理库表结构)。
-4.  **生成辅助文档**：同步输出 `incremental_plan.md`、`code_review_findings.md` 等缺陷文件。
-
-### 第五步：多层代码与设计质量审计 (Hygiene & Smells Audit)
-结合需求文档对源码进行“业务逻辑 BDD 验收对齐”、“安全卫生硬编码扫描”与“设计坏味道审计”，并在最终的主代码审查报告（`output/code_review/latest/code_review_report.md`）中进行归纳描述。
-
-### 第六步：用例最终审批与知识库沉淀 (Approval & Knowledge Sink)
-1.  **展示审批摘要**：在对话中展示本次审计结果摘要、强关联的数据库表和 API 接口统计，并附上生成的三个定制文档的本地文件链接。
-2.  **申请最终审批**：暂停并显式提示用户对其进行审批确认。
-3.  **生成确认与沉淀**：只有在用户确认“通过”后，自动生成 `output/latest/testcase_confirmation.json`，并将满足可复用提取条件的测试模式沉淀至 `knowledge/` 下并更新 `knowledge/index.json`。
-
----
-
-## 4. 推荐执行命令
-
-### 4.0 首次安装并注册 CodeGraph（仅环境门禁失败时人工执行）
 ```powershell
-powershell -ExecutionPolicy Bypass -File .codex/skills/tapd-code-source-review/scripts/setup_codegraph.ps1
+python .codex/skills/tapd-code-source-review/scripts/preflight_check.py `
+  --code-url "https://git.example/service.git#feature-branch" `
+  --test-cases output/test_cases.md `
+  --requirement output/requirement.md `
+  --questions output/questions.md `
+  --metadata-document .codex/skills/xjjk-yewu-sql/state/documents/metadata_document.json `
+  --output-root output/code_sources
 ```
 
-脚本完成后必须重启 Codex，再重新执行本技能。正常审查流程不得自动调用该安装脚本。
+记录命令输出的 `<source_run_dir>`，后续步骤必须显式使用该目录。
 
-### 4.1 初始化运行目录与门禁检查
-```bash
-python scripts/preflight_check.py --code-url <仓库URL#分支>
+### 2. 拉取、索引和初审
+
+```powershell
+python .codex/skills/tapd-code-source-review/scripts/fetch_code_sources.py `
+  --manifest <source_run_dir>/source_manifest.json `
+  --output-root output/code_sources
+
+python .codex/skills/tapd-code-source-review/scripts/scan_prepare_findings.py `
+  --manifest <source_run_dir>/source_manifest.json
 ```
 
-### 4.2 解析并提取用例
-```bash
-python scripts/parse_testcases.py --run-dir output/code_review/latest
+任一服务失败时停止。展示代码源、分支、Commit、CodeGraph 状态和初审发现，等待用户确认。
+
+### 3. 审批代码源
+
+仅在用户明确批准后执行：
+
+```powershell
+python .codex/skills/tapd-code-source-review/scripts/approve_code_source.py `
+  --run-dir <source_run_dir> `
+  --approver USER `
+  --approval-note "用户确认代码源与初审结果"
 ```
 
-### 4.3 执行基于用例与平台强过滤的代码证据扫描
-```bash
-python scripts/review_code_evidence.py --run-dir output/code_review/latest --platform "<用户确认的平台名称>"
+### 4. 确认平台、网关和疑问处理
+
+向用户展示可用数据库连接和服务列表。不得猜测平台或网关前缀。
+
+每个服务都必须提供：
+
+- `--platform service_001=鲨域测试`
+- `--gateway-prefix service_001=/product`
+- `--gateway-evidence service_001=path/to/gateway.yml:42`
+
+同一代码源包含多个独立网关服务时，服务级前缀使用 `/`，并按源码路径增加模块覆盖规则：
+
+- `--gateway-prefix-rule service_001:mall4cloud-product=/product`
+- `--gateway-evidence-rule service_001:mall4cloud-product=path/to/evidence:42`
+
+规则按源码文件路径最长匹配，未命中时回退到服务级前缀。每条规则都必须有包含对应前缀的真实证据行。
+
+如果 `questions.md` 有实际疑问，用户必须明确选择 `resolved` 或 `ignored` 并提供说明。
+
+### 5. 创建审查批次
+
+```powershell
+python .codex/skills/tapd-code-source-review/scripts/prepare_review_run.py `
+  --source-run-dir <source_run_dir> `
+  --test-cases output/test_cases.md `
+  --requirement output/requirement.md `
+  --questions output/questions.md `
+  --metadata-document .codex/skills/xjjk-yewu-sql/state/documents/metadata_document.json `
+  --platform service_001=鲨域测试 `
+  --gateway-prefix service_001=/product `
+  --gateway-evidence service_001=path/to/gateway.yml:42 `
+  --questions-decision resolved `
+  --questions-note "疑问已由代码证据闭环" `
+  --output-root output/code_review
 ```
 
----
+记录命令输出的 `<review_run_dir>`。
 
-## 5. 完成定义
-*   已正确执行多仓库拉取及疑问销号，无代码层不可闭环问题阻断。
-*   已交互确认数据库平台名称。
-*   已基于用例端点和核心词实现双重强关联过滤，无任何非本次需求相关的接口与库表泄露。
-*   已深度抓取了接口参数明细并展开了 RequestBody DTO 字段属性。
-*   已成功生成 **单元测试接口文档**、**核心流程接口文档**、**表信息文档**。
-*   用户最终审批通过后，已生成用例确认 `testcase_confirmation.json` 并完成 `knowledge/` 沉淀。
+### 6. 生成证据
+
+```powershell
+python .codex/skills/tapd-code-source-review/scripts/analyze_testcase_evidence.py `
+  --run-dir <review_run_dir> `
+  --manifest <review_run_dir>/source_manifest.json `
+  --source-confirmation <review_run_dir>/code_source_confirmation.json `
+  --test-cases output/test_cases.md `
+  --metadata-document .codex/skills/xjjk-yewu-sql/state/documents/metadata_document.json `
+  --policy .codex/skills/tapd-code-source-review/assets/review-policy.json
+```
+
+### 7. 校验并发布
+
+```powershell
+python .codex/skills/tapd-code-source-review/scripts/validate_publish_review.py `
+  --run-dir <review_run_dir> `
+  --test-cases output/test_cases.md `
+  --output-root output/code_review
+```
+
+只有校验通过的完整批次才能发布到 `output/code_review/latest/`。
+
+### 8. 最终审批
+
+展示接口、表、未闭环问题和三个主要文档，等待用户明确批准。批准后执行：
+
+```powershell
+python .codex/skills/tapd-code-source-review/scripts/approve_testcase_review.py `
+  --run-dir <review_run_dir> `
+  --test-cases output/test_cases.md `
+  --approver USER `
+  --approval-note "用户批准用例与代码证据" `
+  --confirmation-path output/latest/testcase_confirmation.json `
+  --knowledge-root knowledge
+```
+
+## 完成条件
+
+- 代码源、分支、Commit、CodeGraph 和人工确认绑定到同一 source run。
+- 平台、网关证据、疑问决策和输入哈希绑定到同一 review run。
+- 接口方法、完整路由、DTO、调用链和表均有源码或元数据证据。
+- `table_information.md` 只包含指定平台元数据唯一命中的表；未命中表进入 `unresolved_tables.md`。
+- `review_validation.json` 与 `evidence_index.json` 中的哈希全部匹配。
+- 用户最终批准后才生成 `testcase_confirmation.json` 和知识索引记录。

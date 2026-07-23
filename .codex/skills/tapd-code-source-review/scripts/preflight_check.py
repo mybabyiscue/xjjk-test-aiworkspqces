@@ -11,13 +11,17 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from codegraph_support import assert_codegraph_environment
+from workflow_contract import parse_code_url, sha256_file
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Create tapd-code-source-review preflight outputs.")
     parser.add_argument("--code-url", action="append", required=True, help="HTTP/HTTPS code URL. Repeat for multiple services.")
-    parser.add_argument("--output-root", default="output/code_sources", help="Output root for code source runs.")
-    parser.add_argument("--platform", action="append", help="Service name to platform mapping, e.g., course=鲨域测试")
+    parser.add_argument("--test-cases", required=True)
+    parser.add_argument("--requirement", required=True)
+    parser.add_argument("--questions", required=True)
+    parser.add_argument("--metadata-document", required=True)
+    parser.add_argument("--output-root", required=True, help="Output root for code source runs.")
     args = parser.parse_args()
 
     assert_codegraph_environment()
@@ -33,40 +37,39 @@ def main() -> int:
     raw_dir = run_dir / "raw"
     raw_dir.mkdir(parents=True, exist_ok=False)
 
-    platform_map = {}
-    if args.platform:
-        for p in args.platform:
-            if "=" in p:
-                sname, pname = p.split("=", 1)
-                platform_map[sname.strip().lower()] = pname.strip()
-
     previous_run_id = read_previous_run_id(latest_dir)
     sources = []
-    errors = []
+    errors = validate_required_inputs(
+        Path(args.test_cases),
+        Path(args.requirement),
+        Path(args.questions),
+        Path(args.metadata_document),
+    )
     for index, url in enumerate(args.code_url, start=1):
         normalized = url.strip()
         service_id = f"service_{index:03d}"
-        parsed = urlparse(normalized)
-        source_type = detect_source_type(normalized)
-        resolved_name = resolve_name(normalized)
-        platform = platform_map.get(resolved_name.lower(), "")
         error = ""
-        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-            error = "代码路径必须是有效的 HTTP/HTTPS URL。"
+        clean_url = normalized
+        source_type = "unknown"
+        branch = ""
+        try:
+            clean_url, source_type, branch = parse_code_url(normalized)
+        except ValueError as exc:
+            error = str(exc)
             errors.append(f"{service_id}: {error}")
+        resolved_name = resolve_name(clean_url)
         sources.append(
             {
                 "service_id": service_id,
-                "input_url": normalized,
+                "input_url": clean_url,
                 "source_type": source_type,
                 "resolved_name": resolved_name,
-                "branch": "",
+                "branch": branch,
                 "commit": "",
                 "cache_path": "",
                 "fetch_status": "pending" if not error else "failed",
-                "url_hash": hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16],
+                "url_hash": hashlib.sha256(f"{clean_url}#{branch}".encode("utf-8")).hexdigest()[:16],
                 "error": error,
-                "platform": platform,
             }
         )
 
@@ -76,6 +79,12 @@ def main() -> int:
         "created_at": now.strftime("%Y-%m-%d %H:%M:%S"),
         "code_sources": sources,
         "errors": errors,
+        "inputs": input_hashes(
+            Path(args.test_cases),
+            Path(args.requirement),
+            Path(args.questions),
+            Path(args.metadata_document),
+        ),
     }
     confirmation = {
         "approved": False,
@@ -93,15 +102,6 @@ def main() -> int:
     return 1 if errors else 0
 
 
-def detect_source_type(url: str) -> str:
-    lower = url.lower().split("?", 1)[0]
-    if lower.endswith(".git"):
-        return "git"
-    if lower.endswith(".zip"):
-        return "zip"
-    return "unknown"
-
-
 def resolve_name(url: str) -> str:
     path = urlparse(url).path.rstrip("/")
     name = Path(path).name or "unknown-source"
@@ -110,6 +110,36 @@ def resolve_name(url: str) -> str:
     if name.endswith(".zip"):
         name = name[:-4]
     return name or "unknown-source"
+
+
+def validate_required_inputs(
+    test_cases_path: Path,
+    requirement_path: Path,
+    questions_path: Path,
+    metadata_path: Path,
+) -> list[str]:
+    inputs = {
+        "test cases": test_cases_path,
+        "requirement": requirement_path,
+        "questions": questions_path,
+        "metadata document": metadata_path,
+    }
+    return [f"Missing {label}: {path}" for label, path in inputs.items() if not path.is_file()]
+
+
+def input_hashes(
+    test_cases_path: Path,
+    requirement_path: Path,
+    questions_path: Path,
+    metadata_path: Path,
+) -> dict[str, str]:
+    inputs = {
+        "test_cases_sha256": test_cases_path,
+        "requirement_sha256": requirement_path,
+        "questions_sha256": questions_path,
+        "metadata_sha256": metadata_path,
+    }
+    return {key: sha256_file(path) for key, path in inputs.items() if path.is_file()}
 
 
 def ensure_unique_run_id(runs_dir: Path, base_run_id: str) -> str:

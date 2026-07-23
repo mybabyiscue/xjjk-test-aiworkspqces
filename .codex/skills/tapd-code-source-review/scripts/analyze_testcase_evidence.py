@@ -5,25 +5,35 @@ from __future__ import annotations
 import argparse
 import json
 import re
-import shutil
+import subprocess
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Pattern
 
 from review_policy import read_policy, require_pattern, require_positive_int, require_ratio, require_section, require_string, require_string_list, require_string_map
+from workflow_contract import validate_prepared_review_gate, write_json as write_contract_json
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Generate testcase-driven code evidence reports.")
     parser.add_argument("--run-dir", required=True)
     parser.add_argument("--manifest", required=True)
+    parser.add_argument("--source-confirmation", required=True)
     parser.add_argument("--test-cases", required=True)
     parser.add_argument("--metadata-document", required=True)
     parser.add_argument("--policy", required=True)
-    parser.add_argument("--platform", action="append", help="Runtime platform mapping as service=platform.")
-    parser.add_argument("--metadata-connection", action="append", help="Runtime metadata mapping as service=connection.")
     args = parser.parse_args()
 
     run_dir = Path(args.run_dir)
+    manifest_path = Path(args.manifest)
+    test_cases_path = Path(args.test_cases)
+    metadata_path = Path(args.metadata_document)
+    review_context = validate_prepared_review_gate(
+        run_dir,
+        manifest_path,
+        Path(args.source_confirmation),
+        test_cases_path,
+        metadata_path,
+    )
     policy = read_policy(Path(args.policy))
     source_policy = require_section(policy, "source_scan")
     testcase_policy = require_section(policy, "testcase_parsing")
@@ -41,19 +51,17 @@ def main() -> int:
     method_declaration_pattern = require_pattern(interface_policy, "method_declaration_pattern")
     table_annotation_pattern = require_pattern(interface_policy, "table_annotation_pattern")
     mapping_names = require_string_list(interface_policy, "http_mapping_annotations")
-    http_mapping_pattern = re.compile(r"@(" + "|".join(re.escape(name) for name in mapping_names) + r")\s*\(([^)]*)\)")
+    http_mapping_pattern = build_http_mapping_pattern(mapping_names)
     generic_tokens = set(require_string_list(matching_policy, "generic_tokens"))
     maximum_chinese_ngram_length = require_positive_int(matching_policy, "maximum_chinese_ngram_length")
     minimum_chinese_ngram_length = require_positive_int(matching_policy, "minimum_chinese_ngram_length")
     identifier_minimum_length = require_positive_int(matching_policy, "identifier_minimum_length")
     if minimum_chinese_ngram_length > maximum_chinese_ngram_length:
         raise ValueError("minimum_chinese_ngram_length cannot exceed maximum_chinese_ngram_length")
-    sql_template_grades = set(require_string_list(table_policy, "sql_template_grades"))
-    manifest = read_json_object(Path(args.manifest), "source manifest")
-    cases = parse_test_cases(Path(args.test_cases), case_heading_pattern, route_literal_pattern, generic_tokens, minimum_chinese_ngram_length, maximum_chinese_ngram_length, identifier_minimum_length)
-    metadata = load_metadata(Path(args.metadata_document))
+    manifest = read_json_object(manifest_path, "source manifest")
+    cases = parse_test_cases(test_cases_path, case_heading_pattern, route_literal_pattern, generic_tokens, minimum_chinese_ngram_length, maximum_chinese_ngram_length, identifier_minimum_length)
+    metadata = load_metadata(metadata_path)
     services = validate_services(manifest)
-    services = apply_runtime_mappings(services, parse_mapping_args(args.platform), parse_mapping_args(args.metadata_connection))
     raw_dir = run_dir / "raw"
     raw_dir.mkdir(parents=True, exist_ok=True)
 
@@ -61,7 +69,9 @@ def main() -> int:
     dto_index = build_java_file_index(java_files)
     frontend_calls = scan_frontend_calls(other_files, frontend_route_pattern, set(require_string_list(interface_policy, "excluded_route_segments")), generic_tokens, identifier_minimum_length)
     entries = scan_java_entries(java_files, dto_index, http_mapping_pattern, method_declaration_pattern, interface_policy, generic_tokens, minimum_chinese_ngram_length, maximum_chinese_ngram_length, identifier_minimum_length)
-    selected_entries = select_business_entries(entries, cases)
+    entries = apply_gateway_prefixes(entries, services)
+    changed_source_ranges = collect_changed_source_ranges(services)
+    selected_entries = select_business_entries(entries, cases, changed_source_ranges)
     mapped_entries = map_cases_to_entries(selected_entries, cases, matching_policy)
     call_chains = build_call_chains(mapped_entries, java_files, method_declaration_pattern, interface_policy)
     require_platforms(mapped_entries, services)
@@ -74,24 +84,31 @@ def main() -> int:
     write_json(raw_dir / "call_chain_evidence.json", {"call_chains": call_chains})
     write_json(raw_dir / "table_evidence.json", {"tables": tables})
     write_json(raw_dir / "table_resolution.json", {"tables": tables})
-    write_json(raw_dir / "test_data_plan.json", {"tables": [table for table in tables if table["grade"] in sql_template_grades]})
 
     write_core_interfaces(run_dir / "core_process_interfaces.md", mapped_entries, findings)
     write_unit_interfaces(run_dir / "unit_test_interfaces.md", mapped_entries, call_chains, java_files, findings, require_string_list(unit_test_policy, "test_path_segments"))
-    write_table_report(run_dir / "test_case_tables.md", tables, findings, require_positive_int(table_policy, "max_report_fields"))
-    write_test_data(run_dir / "test_case_data.md", mapped_entries, tables, sql_template_grades)
+    write_table_report(run_dir / "table_information.md", confirmed_tables(tables), findings, require_positive_int(table_policy, "max_report_fields"))
+    write_unresolved_tables(run_dir / "unresolved_tables.md", unresolved_tables(tables))
     write_summary(run_dir / "testcase_evidence_summary.md", cases, mapped_entries, tables, findings)
     update_code_review_report(run_dir / "code_review_report.md", cases, mapped_entries, tables, findings)
-    manifest["testcase_analysis_status"] = "completed"
-    manifest["testcase_evidence_summary"] = {
-        "case_count": len(cases),
+    write_contract_json(run_dir / "review_status.json", {
+        "status": "completed",
+        "review_run_id": run_dir.name,
+        "source_run_id": manifest.get("source_run_id"),
         "interface_count": len(mapped_entries),
         "table_count": len(tables),
+        "unresolved_table_count": len(unresolved_tables(tables)),
         "unclosed_case_count": len(findings),
-    }
-    write_json(Path(args.manifest), manifest)
-    update_confirmation(run_dir / "code_source_confirmation.json", manifest, mapped_entries, tables, findings)
-    sync_latest(run_dir)
+    })
+    context_inputs = review_context.get("inputs")
+    if not isinstance(context_inputs, dict):
+        raise TypeError("review_context.json.inputs must be an object")
+    write_contract_json(run_dir / "evidence_index.json", {
+        "review_run_id": run_dir.name,
+        "source_run_id": manifest.get("source_run_id"),
+        "testcase_hash": context_inputs.get("test_cases_sha256"),
+        "artifacts": {},
+    })
     print(json.dumps({
         "case_count": len(cases),
         "interface_count": len(mapped_entries),
@@ -119,7 +136,9 @@ def validate_services(manifest: dict[str, object]) -> list[dict[str, object]]:
         if not isinstance(raw_service, dict):
             raise TypeError("Each code source must be an object")
         if raw_service.get("fetch_status") != "success":
-            continue
+            raise ValueError(f"Code source is not successful: {raw_service.get('service_id')}")
+        if raw_service.get("codegraph_status") != "healthy":
+            raise ValueError(f"CodeGraph is not healthy: {raw_service.get('service_id')}")
         cache_path = raw_service.get("cache_path")
         service_id = raw_service.get("service_id")
         if not isinstance(cache_path, str) or not Path(cache_path).exists():
@@ -128,31 +147,6 @@ def validate_services(manifest: dict[str, object]) -> list[dict[str, object]]:
     if not services:
         raise ValueError("No successful code sources are available")
     return services
-
-
-def parse_mapping_args(values: list[str] | None) -> dict[str, str]:
-    mappings: dict[str, str] = {}
-    for value in values or []:
-        service, separator, mapped_value = value.partition("=")
-        if not separator or not service.strip() or not mapped_value.strip():
-            raise ValueError(f"Invalid mapping {value}; expected service=value")
-        mappings[service.strip()] = mapped_value.strip()
-    return mappings
-
-
-def apply_runtime_mappings(services: list[dict[str, object]], platforms: dict[str, str], connections: dict[str, str]) -> list[dict[str, object]]:
-    updated_services: list[dict[str, object]] = []
-    for service in services:
-        updated = dict(service)
-        service_id = str(service.get("service_id", ""))
-        if service_id in platforms:
-            updated["platform_id"] = platforms[service_id]
-            updated["platform_name"] = platforms[service_id]
-            updated["platform_status"] = "confirmed"
-        if service_id in connections:
-            updated["metadata_connection"] = connections[service_id]
-        updated_services.append(updated)
-    return updated_services
 
 
 def require_platforms(entries: list[dict[str, object]], services: list[dict[str, object]]) -> None:
@@ -175,7 +169,10 @@ def parse_test_cases(path: Path, case_heading_pattern: Pattern[str], route_liter
     matches = list(case_heading_pattern.finditer(text))
     cases: list[dict[str, object]] = []
     for index, match in enumerate(matches):
-        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        next_case_start = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        next_section = re.search(r"^##\s+", text[match.end():], re.MULTILINE)
+        next_section_start = match.end() + next_section.start() if next_section else len(text)
+        end = min(next_case_start, next_section_start)
         body = text[match.end():end].strip()
         case_id = match.group(1).replace("_", "-")
         title = match.group(2).strip(" -")
@@ -266,16 +263,19 @@ def scan_java_entries(java_files: list[dict[str, str]], dto_index: dict[str, dic
             declaration = method_declaration_pattern.search(text, mapping.end(), mapping.end() + method_declaration_search_characters)
             if declaration is None:
                 continue
-            route = join_routes(class_route, extract_mapping_route(mapping.group(2)))
+            mapping_arguments = mapping.group(2) or ""
+            route = join_routes(class_route, extract_mapping_route(mapping_arguments))
             annotation_name = mapping.group(1)
             http_method = http_annotation_methods.get(annotation_name)
             if http_method is None:
                 raise ValueError(f"Missing HTTP method mapping for annotation: {annotation_name}")
             if http_method == "FROM_ARGUMENTS":
-                http_method = extract_request_method(mapping.group(2), request_method_pattern)
+                http_method = extract_request_method(mapping_arguments, request_method_pattern)
             method_end = find_block_end(text, declaration.end() - 1)
             params = parse_parameters(declaration.group(3), dto_index, validation_annotations, generic_type_pattern, dto_field_pattern)
-            context = extract_leading_javadoc(text, mapping.start(), javadoc_pattern) + text[mapping.start():method_end]
+            leading_javadoc = extract_leading_javadoc(text, mapping.start(), javadoc_pattern)
+            context = leading_javadoc + text[mapping.start():method_end]
+            identity_context = leading_javadoc + text[mapping.start():declaration.end()]
             param_evidence = " ".join(
                 f"{param.get('name', '')} {param.get('type', '')} "
                 + " ".join(str(field.get("name", "")) for field in param.get("fields", []) if isinstance(field, dict))
@@ -292,11 +292,18 @@ def scan_java_entries(java_files: list[dict[str, str]], dto_index: dict[str, dic
                 "params": params,
                 "context": context,
                 "body": text[declaration.end():method_end],
-                "tokens": sorted(extract_tokens(f"{class_name} {declaration.group(2)} {route} {context} {param_evidence}", generic_tokens, minimum_chinese_ngram_length, maximum_chinese_ngram_length, identifier_minimum_length)),
+                "tokens": sorted(extract_tokens(f"{class_name} {declaration.group(2)} {route} {identity_context} {param_evidence}", generic_tokens, minimum_chinese_ngram_length, maximum_chinese_ngram_length, identifier_minimum_length)),
+                "identifier_tokens": sorted(extract_identifier_tokens(f"{class_name} {declaration.group(2)} {route}", generic_tokens, identifier_minimum_length)),
                 "file": item["path"],
                 "line": line_number(text, mapping.start()),
+                "end_line": line_number(text, method_end),
             })
     return dedupe(entries, ("service_id", "http_method", "route", "file"))
+
+
+def build_http_mapping_pattern(mapping_names: list[str]) -> Pattern[str]:
+    annotations = "|".join(re.escape(name) for name in mapping_names)
+    return re.compile(r"@(" + annotations + r")\s*(?:\(([^)]*)\))?")
 
 
 def extract_leading_javadoc(text: str, index: int, javadoc_pattern: Pattern[str]) -> str:
@@ -335,11 +342,54 @@ def extract_mapping_route(arguments: str) -> str:
 
 def extract_request_method(arguments: str, request_method_pattern: Pattern[str]) -> str:
     match = request_method_pattern.search(arguments)
-    return match.group(1) if match else "UNKNOWN"
+    return match.group(1) if match else "ANY"
 
 
 def join_routes(base: str, child: str) -> str:
     return "/" + "/".join(part.strip("/") for part in (base, child) if part.strip("/"))
+
+
+def apply_gateway_prefixes(
+    entries: list[dict[str, object]],
+    services: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    service_index = {
+        str(service.get("service_id", "")): service
+        for service in services
+    }
+    updated_entries: list[dict[str, object]] = []
+    for entry in entries:
+        service_id = str(entry.get("service_id", ""))
+        if service_id not in service_index:
+            raise ValueError(f"Missing gateway prefix for service: {service_id}")
+        service = service_index[service_id]
+        prefix = resolve_gateway_prefix(entry, service)
+        updated = dict(entry)
+        updated["controller_route"] = entry.get("route")
+        updated["route"] = join_routes(prefix, str(entry.get("route", "")))
+        updated_entries.append(updated)
+    return updated_entries
+
+
+def resolve_gateway_prefix(entry: dict[str, object], service: dict[str, object]) -> str:
+    file_path = str(entry.get("file", "")).replace("\\", "/")
+    raw_rules = service.get("gateway_prefix_rules", [])
+    if not isinstance(raw_rules, list):
+        raise TypeError("gateway_prefix_rules must be a list")
+    matching_rules: list[dict[str, object]] = []
+    for raw_rule in raw_rules:
+        if not isinstance(raw_rule, dict):
+            raise TypeError("gateway_prefix_rules entries must be objects")
+        path_fragment = str(raw_rule.get("path_fragment", "")).replace("\\", "/").strip("/")
+        if path_fragment and path_fragment in file_path:
+            matching_rules.append(raw_rule)
+    if matching_rules:
+        selected = max(
+            matching_rules,
+            key=lambda item: len(str(item.get("path_fragment", ""))),
+        )
+        return str(selected.get("prefix", "")).strip()
+    return str(service.get("gateway_prefix", "")).strip()
 
 
 def parse_parameters(raw_params: str, dto_index: dict[str, dict[str, str]], validation_annotations: set[str], generic_type_pattern: Pattern[str], dto_field_pattern: Pattern[str]) -> list[dict[str, object]]:
@@ -414,24 +464,82 @@ def parse_dto_fields(item: dict[str, str] | None, validation_annotations: set[st
     return fields
 
 
-def select_business_entries(entries: list[dict[str, object]], cases: list[dict[str, object]]) -> list[dict[str, object]]:
+def collect_changed_source_ranges(services: list[dict[str, object]]) -> dict[str, list[tuple[int, int]]]:
+    changed_ranges: dict[str, list[tuple[int, int]]] = defaultdict(list)
+    for service in services:
+        if service.get("source_type") != "git":
+            continue
+        root = Path(str(service.get("cache_path", ""))).resolve()
+        remote_head = run_git_text(root, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"])
+        diff = run_git_text(root, ["diff", "--unified=0", "--no-color", f"{remote_head}...HEAD", "--"])
+        current_file = ""
+        for line in diff.splitlines():
+            if line.startswith("+++ b/"):
+                current_file = str((root / line[6:]).resolve()).casefold()
+                continue
+            if not current_file or not line.startswith("@@"):
+                continue
+            match = re.search(r"\+(\d+)(?:,(\d+))?", line)
+            if match is None:
+                continue
+            start = int(match.group(1))
+            count = int(match.group(2) or "1")
+            end = start if count == 0 else start + count - 1
+            changed_ranges[current_file].append((start, end))
+    return dict(changed_ranges)
+
+
+def run_git_text(root: Path, arguments: list[str]) -> str:
+    completed = subprocess.run(
+        ["git", "-C", str(root), *arguments],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    return completed.stdout.strip()
+
+
+def select_business_entries(
+    entries: list[dict[str, object]],
+    cases: list[dict[str, object]],
+    changed_source_ranges: dict[str, list[tuple[int, int]]],
+) -> list[dict[str, object]]:
     route_roots = infer_testcase_route_roots(entries, cases)
     if not route_roots:
-        return []
+        if not changed_source_ranges:
+            return entries
+        return [
+            entry
+            for entry in entries
+            if entry_intersects_changed_ranges(entry, changed_source_ranges)
+        ]
     return [
         entry for entry in entries
-        if route_root(str(entry["route"])) in route_roots
+        if route_root(entry_match_route(entry)) in route_roots
     ]
 
 
+def entry_intersects_changed_ranges(entry: dict[str, object], changed_source_ranges: dict[str, list[tuple[int, int]]]) -> bool:
+    file_path = str(Path(str(entry.get("file", ""))).resolve()).casefold()
+    ranges = changed_source_ranges.get(file_path, [])
+    start = int(entry.get("line", 0))
+    end = int(entry.get("end_line", start))
+    return any(start <= changed_end and end >= changed_start for changed_start, changed_end in ranges)
+
+
 def infer_testcase_route_roots(entries: list[dict[str, object]], cases: list[dict[str, object]]) -> set[str]:
-    entry_roots = {route_root(str(entry["route"])) for entry in entries}
+    entry_roots = {route_root(entry_match_route(entry)) for entry in entries}
     roots: set[str] = set()
     for case in cases:
         for literal in as_string_list(case.get("routes", [])):
             segments = route_segments(literal)
             roots.update(root for root in entry_roots if root and root in segments)
     return roots
+
+
+def entry_match_route(entry: dict[str, object]) -> str:
+    return str(entry.get("controller_route") or entry.get("route") or "")
 
 
 def route_segments(route: str) -> list[str]:
@@ -452,46 +560,127 @@ def routes_match(entry_route: str, consumer_route: str) -> bool:
 def map_cases_to_entries(entries: list[dict[str, object]], cases: list[dict[str, object]], matching_policy: dict[str, object]) -> list[dict[str, object]]:
     minimum_score = require_positive_int(matching_policy, "minimum_score")
     max_inferred_cases_per_entry = require_positive_int(matching_policy, "max_inferred_cases_per_entry")
+    max_inferred_entries_per_case = require_positive_int(matching_policy, "max_inferred_entries_per_case")
     minimum_token_document_frequency = require_positive_int(matching_policy, "minimum_token_document_frequency")
     maximum_token_document_frequency_ratio = require_ratio(matching_policy, "maximum_token_document_frequency_ratio")
     minimum_scored_token_length = require_positive_int(matching_policy, "minimum_scored_token_length")
+    minimum_chinese_scored_token_length = require_positive_int(matching_policy, "minimum_chinese_scored_token_length")
     long_token_length = require_positive_int(matching_policy, "long_token_length")
     short_token_weight = require_positive_int(matching_policy, "short_token_weight")
     long_token_weight = require_positive_int(matching_policy, "long_token_weight")
+    chinese_token_weight = require_positive_int(matching_policy, "chinese_token_weight")
+    identifier_aliases = require_alias_map(matching_policy, "identifier_aliases")
     token_frequency: Counter[str] = Counter()
     for entry in entries:
-        token_frequency.update(set(as_string_list(entry["tokens"])))
-    mapped: list[dict[str, object]] = []
+        token_frequency.update(expand_entry_aliases(entry, identifier_aliases))
+    score_matrix: list[dict[str, int]] = []
     for entry in entries:
-        scored_cases = [
-            (case_entry_score(case, entry, token_frequency, len(entries), minimum_token_document_frequency, maximum_token_document_frequency_ratio, minimum_scored_token_length, long_token_length, short_token_weight, long_token_weight), str(case["case_id"]))
+        score_matrix.append({
+            str(case["case_id"]): case_entry_score(
+                case,
+                entry,
+                token_frequency,
+                len(entries),
+                minimum_token_document_frequency,
+                maximum_token_document_frequency_ratio,
+                minimum_scored_token_length,
+                minimum_chinese_scored_token_length,
+                long_token_length,
+                short_token_weight,
+                long_token_weight,
+                chinese_token_weight,
+                identifier_aliases,
+            )
             for case in cases
+        })
+    best_entry_indexes_by_case: dict[str, set[int]] = defaultdict(set)
+    for case in cases:
+        case_id = str(case["case_id"])
+        candidates = [
+            (scores.get(case_id, 0), entry_index)
+            for entry_index, scores in enumerate(score_matrix)
+            if scores.get(case_id, 0) >= minimum_score
+        ]
+        candidates.sort(reverse=True)
+        best_entry_indexes_by_case[case_id].update(
+            entry_index for _, entry_index in candidates[:max_inferred_entries_per_case]
+        )
+    mapped: list[dict[str, object]] = []
+    for entry_index, entry in enumerate(entries):
+        scored_cases = [
+            (score, case_id)
+            for case_id, score in score_matrix[entry_index].items()
         ]
         literal_matches = [
             str(case["case_id"])
             for case in cases
-            if any(routes_match(str(entry["route"]), literal) for literal in as_string_list(case.get("routes", [])))
+            if any(routes_match(entry_match_route(entry), literal) for literal in as_string_list(case.get("routes", [])))
         ]
         positive = [item for item in scored_cases if item[0] >= minimum_score]
         positive.sort(reverse=True)
         clone = dict(entry)
         clone.pop("context", None)
         clone.pop("body", None)
-        inferred_matches = [case_id for _, case_id in positive[:max_inferred_cases_per_entry] if case_id not in literal_matches]
-        clone["case_ids"] = literal_matches + inferred_matches
-        mapped.append(clone)
+        inferred_matches = {
+            case_id
+            for _, case_id in positive[:max_inferred_cases_per_entry]
+            if case_id not in literal_matches
+        }
+        inferred_matches.update(
+            case_id
+            for case_id, entry_indexes in best_entry_indexes_by_case.items()
+            if entry_index in entry_indexes and case_id not in literal_matches
+        )
+        clone["case_ids"] = literal_matches + sorted(inferred_matches)
+        if clone["case_ids"]:
+            mapped.append(clone)
     return mapped
 
 
-def case_entry_score(case: dict[str, object], entry: dict[str, object], token_frequency: Counter[str], entry_count: int, minimum_token_document_frequency: int, maximum_token_document_frequency_ratio: float, minimum_scored_token_length: int, long_token_length: int, short_token_weight: int, long_token_weight: int) -> int:
+def case_entry_score(case: dict[str, object], entry: dict[str, object], token_frequency: Counter[str], entry_count: int, minimum_token_document_frequency: int, maximum_token_document_frequency_ratio: float, minimum_scored_token_length: int, minimum_chinese_scored_token_length: int, long_token_length: int, short_token_weight: int, long_token_weight: int, chinese_token_weight: int, identifier_aliases: dict[str, list[str]]) -> int:
     case_tokens = set(as_string_list(case["tokens"]))
-    entry_tokens = set(as_string_list(entry["tokens"]))
+    entry_tokens = expand_entry_aliases(entry, identifier_aliases)
+    alias_tokens = {alias for aliases in identifier_aliases.values() for alias in aliases}
     maximum_frequency = max(minimum_token_document_frequency, int(entry_count * maximum_token_document_frequency_ratio))
     shared = {
         token for token in case_tokens & entry_tokens
-        if len(token) >= minimum_scored_token_length and token_frequency[token] <= maximum_frequency
+        if token_is_scorable(token, alias_tokens, minimum_scored_token_length, minimum_chinese_scored_token_length)
+        and token_frequency[token] <= maximum_frequency
     }
-    return sum(long_token_weight if len(token) >= long_token_length else short_token_weight for token in shared)
+    return sum(
+        chinese_token_weight
+        if token in alias_tokens
+        else long_token_weight if len(token) >= long_token_length else short_token_weight
+        for token in shared
+    )
+
+
+def require_alias_map(payload: dict[str, object], key: str) -> dict[str, list[str]]:
+    value = payload.get(key)
+    if not isinstance(value, dict):
+        raise TypeError(f"{key} must be an object")
+    aliases: dict[str, list[str]] = {}
+    for token, raw_aliases in value.items():
+        if not isinstance(token, str) or not token:
+            raise TypeError(f"{key} keys must be non-empty strings")
+        if not isinstance(raw_aliases, list) or not raw_aliases or not all(isinstance(alias, str) and alias for alias in raw_aliases):
+            raise TypeError(f"{key}.{token} must be a non-empty string array")
+        aliases[token] = list(raw_aliases)
+    return aliases
+
+
+def expand_entry_aliases(entry: dict[str, object], aliases: dict[str, list[str]]) -> set[str]:
+    tokens = as_string_list(entry["tokens"])
+    identifiers = as_string_list(entry.get("identifier_tokens", tokens))
+    expanded = set(tokens)
+    for token in identifiers:
+        expanded.update(aliases.get(token, []))
+    return expanded
+
+
+def token_is_scorable(token: str, alias_tokens: set[str], minimum_identifier_length: int, minimum_alias_length: int) -> bool:
+    minimum_length = minimum_alias_length if token in alias_tokens else minimum_identifier_length
+    return len(token) >= minimum_length
 
 
 def build_call_chains(entries: list[dict[str, object]], java_files: list[dict[str, str]], method_declaration_pattern: Pattern[str], interface_policy: dict[str, object]) -> list[dict[str, object]]:
@@ -661,6 +850,7 @@ def resolve_tables(entries: list[dict[str, object]], chains: list[dict[str, obje
             "fields": matches[0].get("columns", []) if len(matches) == 1 else parse_dto_fields(item, validation_annotations, dto_field_pattern),
             "indexes": matches[0].get("indexes", {}) if len(matches) == 1 else {},
             "constraints": matches[0].get("constraints", {}) if len(matches) == 1 else {},
+            "table_comment": matches[0].get("comment", "") if len(matches) == 1 else "",
             "operations": infer_operations(table_name, java_files, mapper_names, sql_operations, max_sql_table_distance_characters, operation_fallback_label),
             "tenant_isolation": infer_tenant_isolation(table_name, java_files, tenant_filter_fields),
         })
@@ -722,6 +912,7 @@ def load_metadata(path: Path) -> dict[str, list[dict[str, object]]]:
                 result[str(table["name"])].append({
                     "connection": connection_name,
                     "schema": schema["name"],
+                    "comment": table.get("table_comment", ""),
                     "columns": table.get("columns", []),
                     "indexes": table.get("indexes", {}),
                     "constraints": table.get("constraints", {}),
@@ -775,8 +966,8 @@ def write_unit_interfaces(path: Path, entries: list[dict[str, object]], chains: 
 def write_table_report(path: Path, tables: list[dict[str, object]], findings: list[dict[str, str]], max_report_fields: int) -> None:
     lines = [
         "# 用例中所使用的数据表文档", "", "## 一、关联数据表清单", "",
-        "| 用例编号 | 所属平台 | 库.表名 | 确认等级 | 判定依据说明 | 关键字段 | 读/写类型 | 租户隔离 |",
-        "|---|---|---|---|---|---|---|---|",
+        "| 用例编号 | 所属平台 | 库.表名 | 物理注释 | 确认等级 | 判定依据说明 | 关键字段 | 读/写类型 | 租户隔离 |",
+        "|---|---|---|---|---|---|---|---|---|",
     ]
     for table in tables:
         fields = table.get("fields", [])
@@ -784,34 +975,40 @@ def write_table_report(path: Path, tables: list[dict[str, object]], findings: li
         cases = ", ".join(as_string_list(table.get("case_ids", []))) or "未映射"
         reason = table_grade_reason(str(table["grade"]), str(table["status"]))
         operations = "/".join(as_string_list(table.get("operations", [])))
-        lines.append(f"| {cases} | {table['platform']} | {table['qualified_name']} | {table['grade']} | {reason} | {field_names or '未解析'} | {operations} | {table['tenant_isolation']} |")
+        lines.append(f"| {cases} | {table['platform']} | {table['qualified_name']} | {table.get('table_comment') or '无'} | {table['grade']} | {reason} | {field_names or '未解析'} | {operations} | {table['tenant_isolation']} |")
     append_unclosed(lines, findings)
     write_markdown(path, lines)
 
 
-def write_test_data(path: Path, entries: list[dict[str, object]], tables: list[dict[str, object]], sql_template_grades: set[str]) -> None:
-    lines = [
-        "# 测试数据文档", "",
-        "> **安全声明**：本文档中的 SQL 仅供测试/预发环境参考使用，字段完整性未经 DBA 复核，禁止直接在生产环境执行。执行前必须人工确认 NOT NULL、唯一索引、外键及目标环境；所有 TODO 必须补全后才可执行。",
-        "",
+def confirmed_tables(tables: list[dict[str, object]]) -> list[dict[str, object]]:
+    return [
+        table for table in tables
+        if table.get("status") == "confirmed" and table.get("grade") in {"A", "B"}
     ]
-    confirmed = [table for table in tables if table["grade"] in sql_template_grades]
-    case_routes: dict[str, list[str]] = defaultdict(list)
-    for entry in entries:
-        for case_id in as_string_list(entry.get("case_ids", [])):
-            case_routes[case_id].append(f"{entry['http_method']} {entry['route']}")
-    for case_id, routes in sorted(case_routes.items()):
-        lines.extend([f"## {case_id}", "", "### 接口", "", *[f"- {route}" for route in sorted(set(routes))], "", "### 涉及数据表", ""])
-        if not confirmed:
-            lines.extend(["- 无 A/B 级表；待人工确认平台和库归属后补充 SQL。", ""])
-            continue
-        lines.extend(["| 库.表名 | 确认等级 |", "|---|---|"])
-        lines.extend(f"| {table['qualified_name']} | {table['grade']} |" for table in confirmed)
-        lines.extend(["", "### 测试数据构造 SQL", "", "```sql"])
-        for table in confirmed:
-            lines.append(f"-- TODO: 根据 {case_id} 场景补全 {table['qualified_name']} 的真实主键和全部 NOT NULL 字段。")
-            lines.append(f"-- INSERT INTO {table['qualified_name']} (...) VALUES (...);")
-        lines.extend(["```", "", "### 清理 SQL", "", "```sql", "-- TODO: 仅允许使用主键、策略定义的租户字段或唯一测试标识清理。", "```", ""])
+
+
+def unresolved_tables(tables: list[dict[str, object]]) -> list[dict[str, object]]:
+    return [table for table in tables if table.get("status") != "confirmed"]
+
+
+def write_unresolved_tables(path: Path, tables: list[dict[str, object]]) -> None:
+    lines = [
+        "# 未确认数据表",
+        "",
+        "以下表只有代码证据或存在多库冲突，不得作为物理表结构证据。",
+        "",
+        "| 服务 | 平台 | 代码表名 | 状态 | 源码位置 |",
+        "|---|---|---|---|---|",
+    ]
+    if tables:
+        for table in tables:
+            lines.append(
+                f"| {table.get('service_id', '')} | {table.get('platform', '')} | "
+                f"{table.get('table_name', '')} | {table.get('status', '')} | "
+                f"{table.get('source_file', '')}#L{table.get('source_line', '')} |"
+            )
+    else:
+        lines.append("| 无 | 无 | 无 | 无 | 无 |")
     write_markdown(path, lines)
 
 
@@ -840,34 +1037,13 @@ def update_code_review_report(path: Path, cases: list[dict[str, object]], entrie
         f"- 表等级：A={grades['A']}，B={grades['B']}，C={grades['C']}，D={grades['D']}，待人工确认={grades['-']}。",
         f"- 三方一致性：存在 {conflicts} 张多库同名或冲突表。",
         f"- 未闭环用例：{len(findings)} 条。",
-        "- 详情：[核心流程接口](core_process_interfaces.md) | [单元测试目标](unit_test_interfaces.md) | [关联数据表](test_case_tables.md) | [测试数据](test_case_data.md)",
+        "- 详情：[核心流程接口](core_process_interfaces.md) | [单元测试目标](unit_test_interfaces.md) | [确认数据表](table_information.md) | [未确认数据表](unresolved_tables.md)",
         end_marker,
     ])
     existing = path.read_text(encoding="utf-8") if path.exists() else "# 代码审查报告\n"
     pattern = re.compile(re.escape(start_marker) + r"[\s\S]*?" + re.escape(end_marker))
     updated = pattern.sub(section, existing) if pattern.search(existing) else existing.rstrip() + "\n\n" + section + "\n"
     path.write_text(updated, encoding="utf-8", newline="\n")
-
-
-def update_confirmation(path: Path, manifest: dict[str, object], entries: list[dict[str, object]], tables: list[dict[str, object]], findings: list[dict[str, str]]) -> None:
-    existing = read_json_object(path, "code source confirmation") if path.exists() else {}
-    services = validate_services(manifest)
-    commits = {
-        str(service.get("service_id", "")): str(service.get("commit", ""))
-        for service in services
-    }
-    payload = dict(existing)
-    payload.update({
-        "approved": False,
-        "reason": "用例证据分析已完成，等待用户显式批准本轮代码源结果。",
-        "source_run_id": manifest.get("source_run_id"),
-        "commits": commits,
-        "testcase_analysis_status": "completed",
-        "interface_count": len(entries),
-        "table_count": len(tables),
-        "unclosed_case_count": len(findings),
-    })
-    write_json(path, payload)
 
 
 def append_unclosed(lines: list[str], findings: list[dict[str, str]]) -> None:
@@ -969,16 +1145,6 @@ def write_json(path: Path, payload: dict[str, object]) -> None:
 
 def write_markdown(path: Path, lines: list[str]) -> None:
     path.write_text("\n".join(lines).strip() + "\n", encoding="utf-8", newline="\n")
-
-
-def sync_latest(run_dir: Path) -> None:
-    if run_dir.name == "latest":
-        return
-    output_root = run_dir.parent.parent
-    latest_dir = output_root / "latest"
-    if latest_dir.exists():
-        shutil.rmtree(latest_dir)
-    shutil.copytree(run_dir, latest_dir)
 
 
 if __name__ == "__main__":

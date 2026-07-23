@@ -6,7 +6,6 @@ import argparse
 import hashlib
 import json
 import re
-import shutil
 from pathlib import Path
 from typing import Any
 
@@ -17,11 +16,13 @@ FIELD_LINE = re.compile(r"^- ([^：]+)：(.*)$")
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="解析 test_cases.md 为结构化上下文。")
-    parser.add_argument("--run-dir", required=True, help="本次 code_review 运行目录或 latest 目录。")
-    parser.add_argument("--testcase-path", default="output/latest/test_cases.md", help="测试用例 Markdown 路径。")
+    parser.add_argument("--run-dir", required=True, help="Isolated code_review run directory.")
+    parser.add_argument("--testcase-path", required=True, help="Testcase Markdown path.")
     args = parser.parse_args()
 
     run_dir = Path(args.run_dir)
+    if run_dir.name == "latest":
+        raise ValueError("latest cannot be used as a testcase parsing work directory")
     testcase_path = Path(args.testcase_path)
     raw_dir = run_dir / "raw"
     raw_dir.mkdir(parents=True, exist_ok=True)
@@ -40,7 +41,6 @@ def main() -> int:
     write_json(raw_dir / "parsed_test_cases.json", payload)
     write_context_markdown(run_dir / "testcase_context.md", payload)
     update_index(run_dir / "evidence_index.json", payload)
-    sync_latest_if_run_dir(run_dir)
     print(len(cases))
     return 0
 
@@ -240,16 +240,6 @@ def safe_read_json(path: Path) -> dict[str, Any]:
 
 def write_json(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8", newline="\n")
-
-
-def sync_latest_if_run_dir(run_dir: Path) -> None:
-    if run_dir.name == "latest":
-        return
-    output_root = run_dir.parent.parent
-    latest_dir = output_root / "latest"
-    if latest_dir.exists():
-        shutil.rmtree(latest_dir)
-    shutil.copytree(run_dir, latest_dir)
 
 
 if __name__ == "__main__":
