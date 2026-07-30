@@ -50,7 +50,7 @@ def read_json_object(path: Path, label: str) -> dict[str, object]:
 
 def validate_review_outputs(run_dir: Path, manifest: dict[str, object]) -> None:
     successful_sources(manifest)
-    required = ["code_review_report.md", "code_prepare_findings.md"]
+    required = ["code_prepare_findings.md"]
     if manifest.get("testcase_analysis_status") == "completed":
         required.extend([
             "core_process_interfaces.md",

@@ -74,7 +74,6 @@ public class ActivityController {
         "manifest_sha256": sha256_file(manifest_path),
     })
     (source_run / "code_prepare_findings.md").write_text("# Findings\n\nNone.\n", encoding="utf-8")
-    (source_run / "code_review_report.md").write_text("# Code Review\n", encoding="utf-8")
     write_json(source_run / "raw" / "prepare_findings.json", {"findings": []})
 
     test_cases = tmp_path / "test_cases.md"

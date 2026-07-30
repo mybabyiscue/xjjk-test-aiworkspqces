@@ -19,11 +19,11 @@ description: 基于已审批的 TAPD 测试用例、代码审查证据、真实�
 
 按顺序执行。任一 Gate 失败时立即停止，不生成最终文档，不做降级替代。
 
-1. **能力 Gate**：确认 Python 项目环境、Playwright 浏览器能力和 `xjjk-yewu-sql` 数据库连接能力可用。
+1. **能力 Gate**：确认 Python 项目环境、Playwright 浏览器能力和工作区 `config/connections.json` 数据库连接能力可用。
 2. **输入 Gate**：确认 `execution-workflow.md` 列出的全部输入存在。
 3. **审批 Gate**：运行 `validate_confirmed_input.py`。要求 `approved` 为 `true`、`test_cases.md` 哈希匹配、代码复审批次匹配且 `tapd_cases.json` 符合正式契约。
 4. **API 平台 Gate**：读取 `config/environments_config.json`，展示所有环境的名称和 `api_domain`。即使只有一个环境，也要等待用户明确选择一个；批量准备时按环境分别运行，禁止默认选择或把多个域名合并到一次运行。
-5. **数据库平台 Gate**：使用 `xjjk-yewu-sql` 展示所有已启用连接，只显示名称和非敏感连接标识。等待用户明确选择，禁止根据 API 平台、表名或历史记录猜测。
+5. **数据库平台 Gate**：读取工作区 `config/connections.json` 展示所有已启用连接，只显示名称和非敏感连接标识。等待用户明确选择，禁止根据 API 平台、表名或历史记录猜测。该文件是本独立工作区的唯一数据库连接来源，不读取技能目录或用户目录中的同名注册表。
 6. **Token Gate**：按 [configuration.md](references/configuration.md) 探测选定环境。外部请求最多尝试三次，每次失败记录结构化 Warning；401 时按配置使用 Playwright 重登。仍失败、租户歧义或缺少稳定登录定位信息时立即停止并请求用户处理。
 
 ## 数据安全
@@ -32,7 +32,7 @@ description: 基于已审批的 TAPD 测试用例、代码审查证据、真实�
 - 正向用例必须使用真实查询记录；禁止 Mock、占位主键和凭空构造字段。
 - 仅为有明确需求或代码校验证据的反向用例构造无效值、边界值或越权 ID。
 - 禁止执行 `INSERT`、`UPDATE`、`DELETE`、DDL、存储过程、文件导出、锁操作或带注释的 SQL。
-- 将 Token、账号和密码仅保存到 `config/credentials.local.json`。禁止写入技能目录、Markdown、JSON 中间产物、日志或 Git 跟踪文件。
+- 将 API Token、账号和密码仅保存到 `config/credentials.local.json`；数据库连接凭证仅保存到已被 Git 忽略的 `config/connections.json`。禁止写入技能目录、Markdown、JSON 中间产物、日志或 Git 跟踪文件。
 - 文档中的敏感 Header 必须显示为 `***`。
 - 将每条真实查询结果按 `库名:表名:【JSON】` 写入 `output/test_data_manifest.md`。
 

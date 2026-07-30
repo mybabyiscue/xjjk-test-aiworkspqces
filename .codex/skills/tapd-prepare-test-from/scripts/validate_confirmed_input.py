@@ -15,9 +15,8 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--test-cases", required=True)
     parser.add_argument("--tapd-cases", required=True)
     parser.add_argument("--evidence-index", required=True)
-    parser.add_argument("--related-interfaces", required=True)
-    parser.add_argument("--related-tables", required=True)
-    parser.add_argument("--interface-evidence", required=True)
+    parser.add_argument("--unit-interface-evidence", required=True)
+    parser.add_argument("--core-interface-evidence", required=True)
     parser.add_argument("--table-evidence", required=True)
     parser.add_argument("--code-evidence", required=True)
     parser.add_argument("--environment-name", required=True)
@@ -40,14 +39,18 @@ def main() -> int:
     cases_path: Path = existing_path(arguments.tapd_cases, "tapd_cases")
     load_cases(cases_path)
     evidence_index_path: Path = existing_path(arguments.evidence_index, "evidence_index")
+    unit_interface_evidence_path: Path = existing_path(arguments.unit_interface_evidence, "unit_interface_evidence")
+    core_interface_evidence_path: Path = existing_path(arguments.core_interface_evidence, "core_interface_evidence")
+    table_evidence_path: Path = existing_path(arguments.table_evidence, "table_evidence")
+    code_evidence_path: Path = existing_path(arguments.code_evidence, "code_evidence")
     input_paths: dict[str, Path] = {
         "test_cases": test_cases_path,
         "tapd_cases": cases_path,
-        "related_interfaces": existing_path(arguments.related_interfaces, "related_interfaces"),
-        "related_tables": existing_path(arguments.related_tables, "related_tables"),
-        "interface_evidence": existing_path(arguments.interface_evidence, "interface_evidence"),
-        "table_evidence": existing_path(arguments.table_evidence, "table_evidence"),
-        "code_evidence": existing_path(arguments.code_evidence, "code_evidence"),
+        "evidence_index": evidence_index_path,
+        "unit_interface_evidence": unit_interface_evidence_path,
+        "core_interface_evidence": core_interface_evidence_path,
+        "table_evidence": table_evidence_path,
+        "code_evidence": code_evidence_path,
     }
     confirmation: dict[str, object] = read_json_object(confirmation_path)
     evidence_index: dict[str, object] = read_json_object(evidence_index_path)
@@ -60,6 +63,15 @@ def main() -> int:
     review_run_id: str = require_string(confirmation.get("code_review_run_id"), "code_review_run_id")
     if evidence_index.get("review_run_id") != review_run_id:
         raise PreparationError("代码复审批次与 testcase_confirmation.json.code_review_run_id 不一致。")
+    validate_review_artifact_hashes(
+        evidence_index,
+        {
+            "unit_test_interfaces.md": unit_interface_evidence_path,
+            "core_process_interfaces.md": core_interface_evidence_path,
+            "table_information.md": table_evidence_path,
+            "source_manifest.json": code_evidence_path,
+        },
+    )
     snapshot: dict[str, object] = {
         "testcase_confirmation": {
             "testcase_hash": expected_hash,
@@ -73,6 +85,16 @@ def main() -> int:
     write_json_object(Path(arguments.output), snapshot)
     print(f"确认输入校验通过：{review_run_id}")
     return 0
+
+
+def validate_review_artifact_hashes(evidence_index: dict[str, object], artifact_paths: dict[str, Path]) -> None:
+    artifacts: object = evidence_index.get("artifacts")
+    if not isinstance(artifacts, dict):
+        raise PreparationError("evidence_index.json.artifacts 必须是对象。")
+    for artifact_name, path in artifact_paths.items():
+        expected_hash: str = require_string(artifacts.get(artifact_name), f"artifacts.{artifact_name}")
+        if file_sha256(path) != expected_hash:
+            raise PreparationError(f"代码复审证据哈希不一致：{artifact_name}")
 
 
 if __name__ == "__main__":

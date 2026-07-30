@@ -95,6 +95,7 @@ def fetch_git(source: dict, target: Path) -> None:
             run_git(["git", "-C", str(target), "checkout", requested_branch])
         except subprocess.CalledProcessError:
             run_git(["git", "-C", str(target), "checkout", "-b", requested_branch, f"origin/{requested_branch}"])
+        run_git(["git", "-C", str(target), "merge", "--ff-only", f"origin/{requested_branch}"])
     commit = run_git(["git", "-C", str(target), "rev-parse", "HEAD"]).strip()
     branch = run_git(["git", "-C", str(target), "rev-parse", "--abbrev-ref", "HEAD"]).strip()
     source.update({"cache_path": str(target), "commit": commit, "branch": branch, "fetch_status": "success", "error": ""})
@@ -123,7 +124,13 @@ def run_git(command: list[str]) -> str:
 
 
 def run_git_once(command: list[str]) -> str:
-    completed = subprocess.run(command, check=True, capture_output=True, text=True)
+    completed = subprocess.run(
+        command,
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
     return completed.stdout
 
 

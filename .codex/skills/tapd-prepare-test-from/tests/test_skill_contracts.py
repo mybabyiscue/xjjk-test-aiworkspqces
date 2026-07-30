@@ -3,17 +3,19 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 
 SCRIPTS_PATH: Path = Path(__file__).resolve().parents[1] / "scripts"
+SKILL_PATH: Path = SCRIPTS_PATH.parent
 sys.path.insert(0, str(SCRIPTS_PATH))
 
 from build_assessment_from_model import merge_assessment
 from execute_read_query_plan import QueryPlanError, validate_select
-from preparation_contract import PreparationError, load_cases, validation_errors
+from preparation_contract import PreparationError, file_sha256, load_cases, validation_errors
 from render_three_documents import render_flow_document, render_interface_document
 
 
@@ -55,6 +57,106 @@ class CaseContractTests(unittest.TestCase):
             path: Path = write_payload(Path(raw_directory), {"total_count": 1, "cases": [legacy_case]})
             with self.assertRaisesRegex(PreparationError, "requirement_id"):
                 load_cases(path)
+
+
+class ConfirmedInputContractTests(unittest.TestCase):
+    def test_current_code_review_artifacts_are_the_complete_input_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_directory:
+            directory: Path = Path(raw_directory)
+            test_cases: Path = directory / "test_cases.md"
+            tapd_cases: Path = directory / "tapd_cases.json"
+            confirmation: Path = directory / "testcase_confirmation.json"
+            evidence_index: Path = directory / "evidence_index.json"
+            unit_interfaces: Path = directory / "unit_test_interfaces.md"
+            core_interfaces: Path = directory / "core_process_interfaces.md"
+            table_information: Path = directory / "table_information.md"
+            source_manifest: Path = directory / "source_manifest.json"
+            snapshot: Path = directory / "confirmed_input_snapshot.json"
+
+            test_cases.write_text("# Test cases\n", encoding="utf-8")
+            tapd_cases.write_text(
+                json.dumps({"total_count": 1, "cases": [valid_case()]}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            confirmation.write_text(
+                json.dumps({
+                    "approved": True,
+                    "testcase_hash": file_sha256(test_cases),
+                    "code_review_run_id": "review-1",
+                    "approved_at": "2026-07-23T00:00:00+08:00",
+                }),
+                encoding="utf-8",
+            )
+            for path in (unit_interfaces, core_interfaces, table_information):
+                path.write_text(f"# {path.stem}\n", encoding="utf-8")
+            source_manifest.write_text("{}\n", encoding="utf-8")
+            evidence_index.write_text(
+                json.dumps({
+                    "review_run_id": "review-1",
+                    "artifacts": {
+                        "unit_test_interfaces.md": file_sha256(unit_interfaces),
+                        "core_process_interfaces.md": file_sha256(core_interfaces),
+                        "table_information.md": file_sha256(table_information),
+                        "source_manifest.json": file_sha256(source_manifest),
+                    },
+                }),
+                encoding="utf-8",
+            )
+
+            completed: subprocess.CompletedProcess[bytes] = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPTS_PATH / "validate_confirmed_input.py"),
+                    "--confirmation", str(confirmation),
+                    "--test-cases", str(test_cases),
+                    "--tapd-cases", str(tapd_cases),
+                    "--evidence-index", str(evidence_index),
+                    "--unit-interface-evidence", str(unit_interfaces),
+                    "--core-interface-evidence", str(core_interfaces),
+                    "--table-evidence", str(table_information),
+                    "--code-evidence", str(source_manifest),
+                    "--environment-name", "Test",
+                    "--api-domain", "https://api.example.test",
+                    "--output", str(snapshot),
+                ],
+                check=True,
+                capture_output=True,
+            )
+
+            self.assertEqual(completed.returncode, 0)
+            payload: dict[str, object] = json.loads(snapshot.read_text(encoding="utf-8"))
+            self.assertEqual(
+                set(payload["input_hashes"]),
+                {
+                    "test_cases",
+                    "tapd_cases",
+                    "evidence_index",
+                    "unit_interface_evidence",
+                    "core_interface_evidence",
+                    "table_evidence",
+                    "code_evidence",
+                },
+            )
+
+
+class WorkspaceConfigurationContractTests(unittest.TestCase):
+    def test_database_commands_use_workspace_configuration_only(self) -> None:
+        skill_text: str = (SKILL_PATH / "SKILL.md").read_text(encoding="utf-8")
+        workflow_text: str = (SKILL_PATH / "references" / "execution-workflow.md").read_text(encoding="utf-8")
+        configuration_text: str = (SKILL_PATH / "references" / "configuration.md").read_text(encoding="utf-8")
+        combined: str = "\n".join((skill_text, workflow_text, configuration_text))
+
+        self.assertIn("config/connections.json", combined)
+        self.assertNotIn(".codex/skills/xjjk-yewu-sql/state/connections.json", combined)
+        self.assertNotIn("C:\\Users\\Administrator\\.codex\\skills", combined)
+
+    def test_token_gate_requires_an_authenticated_endpoint_and_application_code(self) -> None:
+        configuration_text: str = (SKILL_PATH / "references" / "configuration.md").read_text(encoding="utf-8")
+
+        self.assertIn("不能只填写不校验鉴权的 `api_domain` 根地址", configuration_text)
+        self.assertIn("healthcheck_headers", configuration_text)
+        self.assertIn("healthcheck_success_code", configuration_text)
+        self.assertIn("healthcheck_unauthorized_codes", configuration_text)
 
 
 class AssessmentTests(unittest.TestCase):

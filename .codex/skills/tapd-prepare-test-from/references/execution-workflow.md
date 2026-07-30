@@ -10,15 +10,13 @@
 - `output/tapd_cases.json`
 - `output/latest/testcase_confirmation.json`
 - `output/code_review/latest/evidence_index.json`
-- `output/code_review/latest/related_interfaces.md`
-- `output/code_review/latest/related_tables.md`
 - `output/code_review/latest/unit_test_interfaces.md`
 - `output/code_review/latest/table_information.md`
 - `output/code_review/latest/core_process_interfaces.md`
 - `output/code_review/latest/source_manifest.json`
 - `config/environments_config.json`
 - `config/credentials.local.json`
-- `.codex/skills/xjjk-yewu-sql/state/connections.json`
+- `config/connections.json`
 
 不要用根目录下的兼容副本替代 `output/code_review/latest/` 证据。
 
@@ -33,9 +31,8 @@ python "$skillPath/scripts/validate_confirmed_input.py" `
   --test-cases 'output/test_cases.md' `
   --tapd-cases 'output/tapd_cases.json' `
   --evidence-index 'output/code_review/latest/evidence_index.json' `
-  --related-interfaces 'output/code_review/latest/related_interfaces.md' `
-  --related-tables 'output/code_review/latest/related_tables.md' `
-  --interface-evidence 'output/code_review/latest/unit_test_interfaces.md' `
+  --unit-interface-evidence 'output/code_review/latest/unit_test_interfaces.md' `
+  --core-interface-evidence 'output/code_review/latest/core_process_interfaces.md' `
   --table-evidence 'output/code_review/latest/table_information.md' `
   --code-evidence 'output/code_review/latest/source_manifest.json' `
   --environment-name '<用户确认的环境名>' `
@@ -43,7 +40,7 @@ python "$skillPath/scripts/validate_confirmed_input.py" `
   --output "$preparationPath/confirmed_input_snapshot.json"
 ```
 
-此命令失败时停止。不得跳过哈希、审批或 schema 错误。
+此命令失败时停止。脚本会将三份当前代码审查证据与 `evidence_index.json.artifacts` 逐一核对，并把证据索引本身纳入不可变快照；不得跳过哈希、审批或 schema 错误。
 
 ## 3. 初始化评估壳
 
@@ -56,11 +53,11 @@ python "$skillPath/scripts/initialize_preparation_assessment.py" `
 
 ## 4. 生成并执行只读查询计划
 
-按照 [assessment-contract.md](assessment-contract.md) 生成 `$preparationPath/query_plan.json`。每个表和字段必须来自 `table_information.md` 或 `related_tables.md`，查询目的必须关联用例。禁止执行未经用户确认数据库平台的查询。
+按照 [assessment-contract.md](assessment-contract.md) 生成 `$preparationPath/query_plan.json`。每个表和字段必须来自 `table_information.md`，查询目的必须关联用例。禁止执行未经用户确认数据库平台的查询。
 
 ```powershell
 python "$skillPath/scripts/execute_read_query_plan.py" `
-  --connections '.codex/skills/xjjk-yewu-sql/state/connections.json' `
+  --connections 'config/connections.json' `
   --connection-name '<用户确认的只读连接名>' `
   --plan "$preparationPath/query_plan.json" `
   --output "$preparationPath/real_data_records.json" `
