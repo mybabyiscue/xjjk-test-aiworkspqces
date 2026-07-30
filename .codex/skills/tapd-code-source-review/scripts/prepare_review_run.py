@@ -192,7 +192,6 @@ def normalize_gateway_prefix(prefix: str) -> str:
 def copy_source_review_artifacts(source_run_dir: Path, review_run_dir: Path) -> None:
     source_files = {
         source_run_dir / "code_prepare_findings.md": review_run_dir / "code_prepare_findings.md",
-        source_run_dir / "code_review_report.md": review_run_dir / "code_review_report.md",
         source_run_dir / "raw" / "prepare_findings.json": review_run_dir / "raw" / "prepare_findings.json",
     }
     for source, target in source_files.items():
