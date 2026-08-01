@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import copy
+import os
 import subprocess
 import sys
 import tempfile
@@ -14,20 +16,55 @@ from pathlib import Path
 from types import ModuleType
 
 
-class TestHandler(BaseHTTPRequestHandler):
-    """Serve deterministic HTTP responses for the integration smoke test."""
+class LocalHttpHandler(BaseHTTPRequestHandler):
+    """Serve deterministic HTTP responses for integration smoke tests."""
 
-    def do_GET(self) -> None:
-        if self.path == "/forbidden":
-            self.send_response(403)
-            payload: bytes = b'{"code":"TOKEN_EXPIRED"}'
-        else:
-            self.send_response(200)
-            payload = b'{"code":0,"data":{"id":17}}'
+    resources: set[str] = set()
+    events: list[str] = []
+
+    def read_json_body(self) -> dict[str, object]:
+        content_length: int = int(self.headers.get("Content-Length", "0"))
+        value: object = json.loads(self.rfile.read(content_length).decode("utf-8"))
+        if not isinstance(value, dict):
+            raise TypeError("Expected request JSON object.")
+        return value
+
+    def send_json(self, status: int, payload: bytes) -> None:
+        self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
         self.wfile.write(payload)
+
+    def do_GET(self) -> None:
+        if self.path == "/forbidden":
+            status: int = 403
+            payload: bytes = b'{"code":"TOKEN_EXPIRED"}'
+        elif self.path == "/assertion-failure":
+            status = 200
+            payload = b'{"code":1}'
+        else:
+            status = 200
+            payload = b'{"code":0,"data":{"id":17}}'
+        self.send_json(status, payload)
+
+    def do_POST(self) -> None:
+        body: dict[str, object] = self.read_json_body()
+        resource_name: str = str(body["name"])
+        self.resources.add(resource_name)
+        self.events.append(f"setup:{resource_name}")
+        self.send_json(200, b'{"code":0}')
+
+    def do_DELETE(self) -> None:
+        body: dict[str, object] = self.read_json_body()
+        resource_name: str = str(body["name"])
+        if self.path == "/cleanup-failure":
+            self.events.append(f"cleanup_failed:{resource_name}")
+            self.send_json(409, b'{"code":1}')
+            return
+        self.resources.discard(resource_name)
+        self.events.append(f"cleanup:{resource_name}")
+        self.send_json(200, b'{"code":0}')
 
     def log_message(self, format: str, *args: object) -> None:
         return
@@ -38,31 +75,81 @@ def write_json(path: Path, value: dict[str, object]) -> None:
     path.write_text(json.dumps(value, ensure_ascii=False), encoding="utf-8")
 
 
-def request_plan(path: str) -> dict[str, object]:
+def read_json(path: Path) -> dict[str, object]:
+    value: object = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(value, dict):
+        raise TypeError(f"Expected JSON object: {path}")
+    return value
+
+
+def assessment_payload(path: str) -> dict[str, object]:
     return {
-        "version": 1,
-        "testcase_hash": "approved-hash",
-        "token_error_codes": ["TOKEN_EXPIRED"],
-        "requests": [
+        "source": {
+            "testcase_hash": "approved-hash",
+            "code_review_run_id": "review-1",
+            "input_hashes": {"code_evidence": "evidence-hash"},
+        },
+        "data_preparation": {"entries": []},
+        "interface_cases": [
             {
-                "id": "case_001",
-                "case_ids": ["case_001"],
-                "variant_type": "positive",
-                "method": "GET",
-                "path": path,
-                "headers": {"Accept": "application/json"},
-                "authorization_header": "",
-                "query": {},
-                "body": None,
-                "expected": {
-                    "http_status": 200,
-                    "response_assertions": [{"path": "$.code", "operator": "equals", "value": 0}],
-                    "database_assertions": [],
+                "interface_key": "case_001",
+                "interface_evidence": {
+                    "service": "service",
+                    "controller_file": "Controller.java",
+                    "controller_method": "query",
+                    "http_method": "GET",
+                    "path": path,
                 },
+                "request_variants": [
+                    {
+                        "name": "positive",
+                        "variant_type": "positive",
+                        "case_keys": ["case_001"],
+                        "headers": {"Accept": "application/json"},
+                        "authorization_header": "",
+                        "query": {},
+                        "parameters": [],
+                        "request_body": None,
+                        "expected": {
+                            "http_status": 200,
+                            "response_assertions": [
+                                {"path": "$.code", "operator": "equals", "value": 0}
+                            ],
+                            "database_assertions": [],
+                        },
+                    }
+                ],
+                "audit": {"status": "已通过"},
             }
         ],
-        "flows": [],
+        "core_flows": [],
     }
+
+
+def run_builder(workspace: Path) -> subprocess.CompletedProcess[str]:
+    builder_path: Path = (
+        Path(__file__).resolve().parents[2]
+        / "tapd-prepare-test-from"
+        / "scripts"
+        / "build_api_execution_plan.py"
+    )
+    return subprocess.run(
+        [
+            sys.executable,
+            str(builder_path),
+            "--assessment",
+            str(workspace / "preparation_assessment.json"),
+            "--plan",
+            str(workspace / "execution_plan.json"),
+            "--report",
+            str(workspace / "plan_report.json"),
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env={**os.environ, "PYTHONUTF8": "1"},
+        check=False,
+    )
 
 
 def run_runner(workspace: Path, environment_name: str) -> subprocess.CompletedProcess[str]:
@@ -75,6 +162,8 @@ def run_runner(workspace: Path, environment_name: str) -> subprocess.CompletedPr
             str(workspace),
             "--plan",
             "execution_plan.json",
+            "--assessment",
+            "preparation_assessment.json",
             "--confirmation",
             "confirmation.json",
             "--environment-config",
@@ -89,6 +178,7 @@ def run_runner(workspace: Path, environment_name: str) -> subprocess.CompletedPr
         capture_output=True,
         text=True,
         encoding="utf-8",
+        env={**os.environ, "PYTHONUTF8": "1"},
         check=False,
     )
 
@@ -103,11 +193,62 @@ def load_runner_module() -> ModuleType:
     return module
 
 
+def first_request(plan: dict[str, object]) -> dict[str, object]:
+    requests: object = plan.get("requests")
+    if not isinstance(requests, list) or not requests or not isinstance(requests[0], dict):
+        raise TypeError("Plan must contain one request object.")
+    return requests[0]
+
+
+def api_data_action(action_id: str, action_type: str, method: str, path: str) -> dict[str, object]:
+    return {
+        "id": action_id,
+        "type": action_type,
+        "evidence_reference": "unit_test_interfaces.md#test-data",
+        "method": method,
+        "path": path,
+        "headers": {"Content-Type": "application/json"},
+        "authorization_header": "",
+        "query": {},
+        "body": {"name": "TEST_REQ_RESOURCE"},
+        "expected": {
+            "http_status": 200,
+            "response_assertions": [{"path": "$.code", "operator": "equals", "value": 0}],
+        },
+        "manifest": {
+            "database": "test_db",
+            "table": "resource",
+            "record": {"name": "TEST_REQ_RESOURCE"},
+        },
+    }
+
+
+def with_api_data_lifecycle(assessment: dict[str, object], cleanup_path: str) -> dict[str, object]:
+    prepared: dict[str, object] = copy.deepcopy(assessment)
+    prepared["data_preparation"] = {
+        "entries": [
+            {
+                "id": "resource_fixture",
+                "case_keys": ["case_001"],
+                "strategy": "api_create",
+                "evidence_references": ["unit_test_interfaces.md#test-data"],
+                "verification_query_reference": "QRY_RESOURCE",
+                "isolation_prefix": "TEST_REQ_",
+                "setup": api_data_action("create_resource", "http", "POST", "/setup"),
+                "cleanup": api_data_action("delete_resource", "http", "DELETE", cleanup_path),
+            }
+        ]
+    }
+    return prepared
+
+
 class RunnerSmokeTest(unittest.TestCase):
-    """Exercise the runner against a real local HTTP server."""
+    """Exercise canonical plan verification and HTTP execution."""
 
     def setUp(self) -> None:
-        self.server: ThreadingHTTPServer = ThreadingHTTPServer(("127.0.0.1", 0), TestHandler)
+        LocalHttpHandler.resources = set()
+        LocalHttpHandler.events = []
+        self.server: ThreadingHTTPServer = ThreadingHTTPServer(("127.0.0.1", 0), LocalHttpHandler)
         self.thread: threading.Thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
 
@@ -118,19 +259,117 @@ class RunnerSmokeTest(unittest.TestCase):
 
     def prepare_workspace(self, root: Path, path: str) -> None:
         domain: str = f"http://127.0.0.1:{self.server.server_port}"
-        write_json(root / "execution_plan.json", request_plan(path))
-        write_json(root / "confirmation.json", {"approved": True, "testcase_hash": "approved-hash"})
-        write_json(root / "environments_config.json", {"environments": [{"name": "local", "api_domain": domain}]})
+        write_json(root / "preparation_assessment.json", assessment_payload(path))
+        built: subprocess.CompletedProcess[str] = run_builder(root)
+        self.assertEqual(built.returncode, 0, built.stderr)
+        write_json(
+            root / "confirmation.json",
+            {
+                "approved": True,
+                "testcase_hash": "approved-hash",
+                "code_review_run_id": "review-1",
+            },
+        )
+        write_json(
+            root / "environments_config.json",
+            {"environments": [{"name": "local", "api_domain": domain}]},
+        )
 
-    def test_generates_reports_for_successful_request(self) -> None:
+    def test_consumes_unchanged_plan_generated_by_preparation_skill(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root: Path = Path(temporary_directory)
             self.prepare_workspace(root, "/ok")
+
             result: subprocess.CompletedProcess[str] = run_runner(root, "local")
+
             self.assertEqual(result.returncode, 0, result.stderr)
             report: str = (root / "output" / "interface_test_execution_report.md").read_text(encoding="utf-8")
-            self.assertIn("| case_001 | case_001 | positive | PASS | 200 |", report)
-            self.assertTrue((root / "output" / "core_flow_test_execution_report.md").exists())
+            self.assertIn("| case_001__1 | case_001 | positive | PASS | 200 |", report)
+
+    def test_rejects_modified_assessment_hash(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root: Path = Path(temporary_directory)
+            self.prepare_workspace(root, "/ok")
+            assessment: dict[str, object] = read_json(root / "preparation_assessment.json")
+            assessment["tampered"] = True
+            write_json(root / "preparation_assessment.json", assessment)
+
+            result: subprocess.CompletedProcess[str] = run_runner(root, "local")
+
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertIn("哈希与执行计划记录不一致", result.stderr)
+
+    def test_rejects_modified_http_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root: Path = Path(temporary_directory)
+            self.prepare_workspace(root, "/ok")
+            plan: dict[str, object] = read_json(root / "execution_plan.json")
+            first_request(plan)["path"] = "/tampered"
+            write_json(root / "execution_plan.json", plan)
+
+            result: subprocess.CompletedProcess[str] = run_runner(root, "local")
+
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertIn("字段=plan.requests[0].path", result.stderr)
+
+    def test_rejects_modified_http_method(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root: Path = Path(temporary_directory)
+            self.prepare_workspace(root, "/ok")
+            plan: dict[str, object] = read_json(root / "execution_plan.json")
+            first_request(plan)["method"] = "POST"
+            write_json(root / "execution_plan.json", plan)
+
+            result: subprocess.CompletedProcess[str] = run_runner(root, "local")
+
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertIn("字段=plan.requests[0].method", result.stderr)
+
+    def test_rejects_modified_response_assertion(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root: Path = Path(temporary_directory)
+            self.prepare_workspace(root, "/ok")
+            plan: dict[str, object] = read_json(root / "execution_plan.json")
+            request: dict[str, object] = first_request(plan)
+            expected: object = request.get("expected")
+            if not isinstance(expected, dict):
+                raise TypeError("Request must contain expected assertions.")
+            assertions: object = expected.get("response_assertions")
+            if not isinstance(assertions, list) or not assertions or not isinstance(assertions[0], dict):
+                raise TypeError("Expected must contain one response assertion.")
+            assertions[0]["value"] = 1
+            write_json(root / "execution_plan.json", plan)
+
+            result: subprocess.CompletedProcess[str] = run_runner(root, "local")
+
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertIn("plan.requests[0].expected.response_assertions[0].value", result.stderr)
+
+    def test_rejects_code_review_run_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root: Path = Path(temporary_directory)
+            self.prepare_workspace(root, "/ok")
+            confirmation: dict[str, object] = read_json(root / "confirmation.json")
+            confirmation["code_review_run_id"] = "review-2"
+            write_json(root / "confirmation.json", confirmation)
+
+            result: subprocess.CompletedProcess[str] = run_runner(root, "local")
+
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertIn("code_review_run_id 不一致", result.stderr)
+
+    def test_rejects_partial_plan(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root: Path = Path(temporary_directory)
+            self.prepare_workspace(root, "/ok")
+            plan: dict[str, object] = read_json(root / "execution_plan.json")
+            plan["ready"] = False
+            write_json(root / "execution_plan.json", plan)
+
+            result: subprocess.CompletedProcess[str] = run_runner(root, "local")
+
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertIn("plan.ready", result.stderr)
 
     def test_returns_token_exit_code_for_403(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -139,6 +378,100 @@ class RunnerSmokeTest(unittest.TestCase):
             result: subprocess.CompletedProcess[str] = run_runner(root, "local")
             self.assertEqual(result.returncode, 10, result.stderr)
             self.assertIn("[TOKEN_EXPIRED_ERROR] local", result.stderr)
+
+    def test_executes_real_http_setup_and_cleanup(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root: Path = Path(temporary_directory)
+            domain: str = f"http://127.0.0.1:{self.server.server_port}"
+            assessment: dict[str, object] = with_api_data_lifecycle(assessment_payload("/ok"), "/cleanup")
+            write_json(root / "preparation_assessment.json", assessment)
+            built: subprocess.CompletedProcess[str] = run_builder(root)
+            self.assertEqual(built.returncode, 0, built.stderr)
+            write_json(root / "confirmation.json", {"approved": True, "testcase_hash": "approved-hash", "code_review_run_id": "review-1"})
+            write_json(root / "environments_config.json", {"environments": [{"name": "local", "api_domain": domain, "environment_type": "test", "allow_test_data_mutation": True}]})
+
+            result: subprocess.CompletedProcess[str] = run_runner(root, "local")
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(LocalHttpHandler.events, ["setup:TEST_REQ_RESOURCE", "cleanup:TEST_REQ_RESOURCE"])
+            self.assertNotIn("TEST_REQ_RESOURCE", LocalHttpHandler.resources)
+            manifest: str = (root / "output" / "test_data_manifest.md").read_text(encoding="utf-8")
+            self.assertIn('"_lifecycle":"created"', manifest)
+            self.assertIn('"_lifecycle":"cleaned"', manifest)
+
+    def test_cleanup_runs_after_test_assertion_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root: Path = Path(temporary_directory)
+            domain: str = f"http://127.0.0.1:{self.server.server_port}"
+            assessment: dict[str, object] = with_api_data_lifecycle(assessment_payload("/assertion-failure"), "/cleanup")
+            write_json(root / "preparation_assessment.json", assessment)
+            built: subprocess.CompletedProcess[str] = run_builder(root)
+            self.assertEqual(built.returncode, 0, built.stderr)
+            write_json(root / "confirmation.json", {"approved": True, "testcase_hash": "approved-hash", "code_review_run_id": "review-1"})
+            write_json(root / "environments_config.json", {"environments": [{"name": "local", "api_domain": domain, "environment_type": "test", "allow_test_data_mutation": True}]})
+
+            result: subprocess.CompletedProcess[str] = run_runner(root, "local")
+
+            self.assertEqual(result.returncode, 1, result.stderr)
+            self.assertEqual(LocalHttpHandler.events[-1], "cleanup:TEST_REQ_RESOURCE")
+            self.assertNotIn("TEST_REQ_RESOURCE", LocalHttpHandler.resources)
+
+    def test_rejects_mutation_disabled_environment(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root: Path = Path(temporary_directory)
+            domain: str = f"http://127.0.0.1:{self.server.server_port}"
+            assessment: dict[str, object] = with_api_data_lifecycle(assessment_payload("/ok"), "/cleanup")
+            write_json(root / "preparation_assessment.json", assessment)
+            built: subprocess.CompletedProcess[str] = run_builder(root)
+            self.assertEqual(built.returncode, 0, built.stderr)
+            write_json(root / "confirmation.json", {"approved": True, "testcase_hash": "approved-hash", "code_review_run_id": "review-1"})
+            write_json(root / "environments_config.json", {"environments": [{"name": "local", "api_domain": domain, "environment_type": "test", "allow_test_data_mutation": False}]})
+
+            result: subprocess.CompletedProcess[str] = run_runner(root, "local")
+
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertIn("allow_test_data_mutation=true", result.stderr)
+            self.assertEqual(LocalHttpHandler.events, [])
+
+    def test_rejects_tampered_setup_action(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root: Path = Path(temporary_directory)
+            domain: str = f"http://127.0.0.1:{self.server.server_port}"
+            assessment: dict[str, object] = with_api_data_lifecycle(assessment_payload("/ok"), "/cleanup")
+            write_json(root / "preparation_assessment.json", assessment)
+            built: subprocess.CompletedProcess[str] = run_builder(root)
+            self.assertEqual(built.returncode, 0, built.stderr)
+            plan: dict[str, object] = read_json(root / "execution_plan.json")
+            data_setup: object = plan.get("data_setup")
+            if not isinstance(data_setup, list) or not data_setup or not isinstance(data_setup[0], dict):
+                raise TypeError("Expected one setup action.")
+            data_setup[0]["method"] = "PUT"
+            write_json(root / "execution_plan.json", plan)
+            write_json(root / "confirmation.json", {"approved": True, "testcase_hash": "approved-hash", "code_review_run_id": "review-1"})
+            write_json(root / "environments_config.json", {"environments": [{"name": "local", "api_domain": domain, "environment_type": "test", "allow_test_data_mutation": True}]})
+
+            result: subprocess.CompletedProcess[str] = run_runner(root, "local")
+
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertIn("plan.data_setup[0].method", result.stderr)
+
+    def test_cleanup_failure_records_residual_data(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root: Path = Path(temporary_directory)
+            domain: str = f"http://127.0.0.1:{self.server.server_port}"
+            assessment: dict[str, object] = with_api_data_lifecycle(assessment_payload("/ok"), "/cleanup-failure")
+            write_json(root / "preparation_assessment.json", assessment)
+            built: subprocess.CompletedProcess[str] = run_builder(root)
+            self.assertEqual(built.returncode, 0, built.stderr)
+            write_json(root / "confirmation.json", {"approved": True, "testcase_hash": "approved-hash", "code_review_run_id": "review-1"})
+            write_json(root / "environments_config.json", {"environments": [{"name": "local", "api_domain": domain, "environment_type": "test", "allow_test_data_mutation": True}]})
+
+            result: subprocess.CompletedProcess[str] = run_runner(root, "local")
+
+            self.assertEqual(result.returncode, 1, result.stderr)
+            self.assertIn("TEST_REQ_RESOURCE", LocalHttpHandler.resources)
+            manifest: str = (root / "output" / "test_data_manifest.md").read_text(encoding="utf-8")
+            self.assertIn('"_lifecycle":"residual"', manifest)
 
     def test_rejects_database_write_sql(self) -> None:
         runner: ModuleType = load_runner_module()
@@ -149,6 +482,69 @@ class RunnerSmokeTest(unittest.TestCase):
         runner: ModuleType = load_runner_module()
         with self.assertRaisesRegex(ValueError, "包含禁止"):
             runner.validate_read_only_sql("SELECT 1 FROM account WHERE id IN (DELETE FROM account)", "sql")
+
+    def test_accepts_parameterized_controlled_insert_and_exact_cleanup(self) -> None:
+        runner: ModuleType = load_runner_module()
+        insert_action: dict[str, object] = {
+            "database": "test_db",
+            "table": "resource",
+            "sql": "INSERT INTO test_db.resource (test_code, name) VALUES (%s, %s)",
+            "parameters": ["TEST_REQ_001", "real fixture"],
+        }
+        cleanup_action: dict[str, object] = {
+            "database": "test_db",
+            "table": "resource",
+            "sql": "DELETE FROM test_db.resource WHERE test_code = %s",
+            "parameters": ["TEST_REQ_001"],
+        }
+
+        runner.validate_sql_insert(insert_action, "insert_action")
+        runner.validate_sql_delete(cleanup_action, "cleanup_action")
+
+    def test_rejects_unbounded_or_non_test_cleanup(self) -> None:
+        runner: ModuleType = load_runner_module()
+        unbounded: dict[str, object] = {
+            "database": "test_db",
+            "table": "resource",
+            "sql": "DELETE FROM test_db.resource",
+            "parameters": [],
+        }
+        non_test_identifier: dict[str, object] = {
+            "database": "test_db",
+            "table": "resource",
+            "sql": "DELETE FROM test_db.resource WHERE test_code = %s",
+            "parameters": ["REAL_001"],
+        }
+
+        with self.assertRaisesRegex(ValueError, "单一测试标识"):
+            runner.validate_sql_delete(unbounded, "cleanup_action")
+        with self.assertRaisesRegex(ValueError, "TEST_"):
+            runner.validate_sql_delete(non_test_identifier, "cleanup_action")
+
+    def test_rejects_unconfirmed_write_connection(self) -> None:
+        runner: ModuleType = load_runner_module()
+        connection: dict[str, object] = {
+            "access_mode": "read-only",
+            "environment_name": "local",
+            "allowed_databases": ["test_db"],
+            "allowed_tables": ["resource"],
+        }
+
+        with self.assertRaisesRegex(PermissionError, "controlled-write"):
+            runner.validate_write_connection(connection, "local", [])
+
+    def test_rejects_production_and_mutation_disabled_environments(self) -> None:
+        runner: ModuleType = load_runner_module()
+        with self.assertRaisesRegex(PermissionError, "environment_type=test"):
+            runner.validate_mutation_environment(
+                {"environment_type": "production", "allow_test_data_mutation": True},
+                "production",
+            )
+        with self.assertRaisesRegex(PermissionError, "allow_test_data_mutation=true"):
+            runner.validate_mutation_environment(
+                {"environment_type": "test", "allow_test_data_mutation": False},
+                "test",
+            )
 
 
 if __name__ == "__main__":

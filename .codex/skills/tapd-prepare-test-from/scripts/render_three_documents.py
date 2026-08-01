@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 from pathlib import Path
 
@@ -76,10 +77,42 @@ def parameter_table(parameters: object) -> list[str]:
     return lines
 
 
+def redact_data_entry(value: object) -> dict[str, object]:
+    entry: dict[str, object] = copy.deepcopy(require_object(value, "data_preparation.entry"))
+    for action_name in ("setup", "cleanup"):
+        raw_action: object = entry.get(action_name)
+        if not isinstance(raw_action, dict):
+            continue
+        raw_headers: object = raw_action.get("headers")
+        if isinstance(raw_headers, dict):
+            raw_action["headers"] = redact_headers(raw_headers)
+    return entry
+
+
 def render_interface_document(assessment: dict[str, object], snapshot: dict[str, object]) -> str:
     environment: dict[str, object] = require_object(assessment.get("environment"), "environment")
     confirmation: dict[str, object] = require_object(snapshot.get("testcase_confirmation"), "snapshot.testcase_confirmation")
     lines: list[str] = ["# 接口测试准备文档", "", f"- 测试环境：{environment['name']}（{environment['api_domain']}）", f"- 测试用例哈希：{confirmation['testcase_hash']}", f"- 代码复审批次：{confirmation['code_review_run_id']}", ""]
+    data_preparation: dict[str, object] = require_object(assessment.get("data_preparation"), "data_preparation")
+    lines.extend(["## 真实测试数据生命周期", ""])
+    entries: list[object] = require_list(data_preparation.get("entries"), "data_preparation.entries")
+    if not entries:
+        lines.extend(["- 本次无额外测试数据创建动作。", ""])
+    for raw_entry in entries:
+        entry: dict[str, object] = redact_data_entry(raw_entry)
+        lines.extend(
+            [
+                f"### {entry['id']}",
+                f"- 策略：{entry['strategy']}",
+                f"- 覆盖用例：{', '.join(entry['case_keys'])}",
+                f"- 验证查询：{entry['verification_query_reference']}",
+                "- Setup/Cleanup：",
+                "```json",
+                markdown_json({"setup": entry.get("setup"), "cleanup": entry.get("cleanup")}),
+                "```",
+                "",
+            ]
+        )
     for raw_interface in require_list(assessment.get("interface_cases"), "interface_cases"):
         interface: dict[str, object] = require_object(raw_interface, "interface_case")
         evidence: dict[str, object] = require_object(interface.get("interface_evidence"), "interface_evidence")

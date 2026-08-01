@@ -29,6 +29,7 @@
 
 ```json
 {
+  "data_preparation": {"entries": []},
   "interface_cases": [],
   "non_interface_cases": [],
   "core_flows": [],
@@ -55,7 +56,9 @@
       "variant_type": "positive",
       "case_keys": ["case_001"],
       "validation_evidence": [],
-      "headers": {"Authorization": "${authorization}"},
+      "headers": {"Content-Type": "application/json"},
+      "authorization_header": "Authorization",
+      "query": {},
       "parameters": [
         {
           "name": "id",
@@ -124,17 +127,88 @@
 
 ### 核心流程
 
-核心流程对象包含 `flow_key`、`name`、`case_keys`、非空 `evidence_references` 和至少两个 `steps`。每个步骤复用接口证据、Header、参数、请求体和结构化断言，并额外提供：
+核心流程对象包含 `flow_key`、`name`、`case_keys`、非空 `evidence_references` 和至少两个 `steps`。每个步骤复用接口证据、Header、授权 Header、查询参数、参数、请求体和结构化断言，并额外提供：
 
+- `step_key`：流程内唯一且稳定的步骤键
+- `case_keys`
+- `variant_type`
 - `parameter_dependencies`
 - `interrupt_condition`
 - `cleanup_steps`
 
+`parameter_dependencies` 每项必须包含 `source_step`、`source_path`、`target` 和 `target_path`。`source_step` 只能引用更早的 `step_key`；`target` 只能是 `body` 或 `query`。
+
 不存在真实调用依赖证据时保持 `core_flows` 为空，并填写 `core_flow_blocker_reason`。
+
+## 真实数据准备
+
+评估根对象必须包含 `data_preparation.entries`。每个需要真实数据的用例按以下策略登记：
+
+```json
+{
+  "data_preparation": {
+    "entries": [
+      {
+        "id": "target_resource",
+        "case_keys": ["case_001"],
+        "strategy": "api_create",
+        "evidence_references": ["unit_test_interfaces.md#真实创建接口"],
+        "verification_query_reference": "QRY_TARGET_RESOURCE",
+        "isolation_prefix": "TEST_REQ_",
+        "setup": {
+          "id": "create_target_resource",
+          "type": "http",
+          "evidence_reference": "Controller.java#create",
+          "method": "POST",
+          "path": "/gateway/resource/create",
+          "headers": {"Content-Type": "application/json"},
+          "authorization_header": "Authorization",
+          "query": {},
+          "body": {"name": "TEST_REQ_RESOURCE_001"},
+          "expected": {
+            "http_status": 200,
+            "response_assertions": [{"path": "$.code", "operator": "equals", "value": 0}]
+          },
+          "manifest": {
+            "database": "test_database",
+            "table": "resource",
+            "record": {"name": "TEST_REQ_RESOURCE_001"}
+          }
+        },
+        "cleanup": {
+          "id": "delete_target_resource",
+          "type": "sql_delete",
+          "evidence_reference": "table_information.md#resource.test_code",
+          "database": "test_database",
+          "table": "resource",
+          "sql": "DELETE FROM test_database.resource WHERE test_code = %s",
+          "parameters": ["TEST_REQ_RESOURCE_001"],
+          "expected_affected_rows": 1,
+          "manifest": {
+            "database": "test_database",
+            "table": "resource",
+            "record": {"test_code": "TEST_REQ_RESOURCE_001"}
+          }
+        }
+      }
+    ]
+  }
+}
+```
+
+`strategy` 只允许：
+
+- `reuse`：只复用只读查询已返回的真实记录，`setup` 和 `cleanup` 必须为 `null`。
+- `api_create`：使用有源码证据的真实业务 API，必须提供 setup 和 cleanup。
+- `sql_insert`：无稳定 API 且不绕过被测行为时使用受控写连接，setup 只允许显式列、参数化单条 `INSERT`，cleanup 只允许单一 `TEST_` 标识的参数化 `DELETE`。
+- `manual_create`：人工完成后必须重新只读查询；`verification_query_reference` 对应记录数大于 0 才能继续，`setup` 和 `cleanup` 为 `null`。
+
+禁止 Mock、Fake、Stub、Mock seed、`UPDATE`、DDL、存储过程、`TRUNCATE` 和无界 `DELETE`。自动创建策略的 `isolation_prefix` 必须以 `TEST_` 开头，setup/cleanup ID 必须全局唯一且一一对应。
 
 ## 覆盖与真实性
 
 - 使用评估壳中的 `case_key`，不得按标题重新排序或重新编号。
 - 每个 `case_key` 必须恰好出现于一个 `interface_cases.covered_case_keys` 或一个 `non_interface_cases.case_key`。
 - HTTP 状态、响应字段、提示文案和数据库断言必须有需求或代码证据。
-- Header 中只能保存变量引用，禁止保存真实 Token。
+- `headers` 中禁止保存 Authorization、Cookie、Token 或其他敏感 Header；需要运行时注入 Token 时只填写 `authorization_header` 的 Header 名称，不需要鉴权时填写空字符串。
+- 查询参数必须明确写入 `query`，禁止根据 `parameters` 或 HTTP Method 推断参数位置。

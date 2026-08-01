@@ -14,8 +14,9 @@ SKILL_PATH: Path = SCRIPTS_PATH.parent
 sys.path.insert(0, str(SCRIPTS_PATH))
 
 from build_assessment_from_model import merge_assessment
+from build_api_execution_plan import build_execution_plan
 from execute_read_query_plan import QueryPlanError, validate_select
-from preparation_contract import PreparationError, file_sha256, load_cases, validation_errors
+from preparation_contract import PreparationError, data_preparation_errors, file_sha256, load_cases, validation_errors
 from render_three_documents import render_flow_document, render_interface_document
 
 
@@ -171,6 +172,7 @@ class AssessmentTests(unittest.TestCase):
             "real_data_records": [],
         }
         mapping: dict[str, object] = {
+            "data_preparation": {"entries": []},
             "interface_cases": [{"interface_key": "verified"}],
             "non_interface_cases": [],
             "core_flows": [],
@@ -178,6 +180,7 @@ class AssessmentTests(unittest.TestCase):
         }
         real_data: dict[str, object] = {"real_data_records": [{"query_reference": "QRY_1"}]}
         result: dict[str, object] = merge_assessment(shell, mapping, real_data)
+        self.assertEqual(result["data_preparation"], mapping["data_preparation"])
         self.assertEqual(result["interface_cases"], mapping["interface_cases"])
         self.assertEqual(result["core_flow_blocker_reason"], "No verified dependency path.")
         self.assertNotIn("reviewed_at", json.dumps(result, ensure_ascii=False))
@@ -207,6 +210,122 @@ class AssessmentTests(unittest.TestCase):
         self.assertIn("assessment.source.input_hashes 与确认输入快照不一致。", errors)
 
 
+class ExecutionPlanTests(unittest.TestCase):
+    def test_builds_canonical_requests_and_flows(self) -> None:
+        expected: dict[str, object] = {
+            "http_status": 200,
+            "response_assertions": [{"path": "$.code", "operator": "equals", "value": 0}],
+            "database_assertions": [],
+        }
+        evidence: dict[str, object] = {
+            "service": "service",
+            "controller_file": "Controller.java",
+            "controller_method": "query",
+            "http_method": "GET",
+            "path": "/gateway/resource",
+        }
+        request_data: dict[str, object] = {
+            "name": "positive",
+            "variant_type": "positive",
+            "case_keys": ["case_001"],
+            "validation_evidence": [],
+            "headers": {"Accept": "application/json"},
+            "authorization_header": "Authorization",
+            "query": {"id": 17},
+            "parameters": [],
+            "request_body": None,
+            "expected": expected,
+            "setup_steps": [],
+            "cleanup_steps": [],
+        }
+        flow_step: dict[str, object] = {
+            **request_data,
+            "step_key": "query_resource",
+            "interface_evidence": evidence,
+            "parameter_dependencies": [],
+            "interrupt_condition": "任一断言失败时中止。",
+        }
+        assessment: dict[str, object] = {
+            "source": {"testcase_hash": "approved-hash", "code_review_run_id": "review-1"},
+            "data_preparation": {"entries": []},
+            "interface_cases": [
+                {
+                    "interface_key": "query_resource",
+                    "interface_evidence": evidence,
+                    "request_variants": [request_data],
+                    "audit": {"status": "已通过"},
+                }
+            ],
+            "core_flows": [
+                {
+                    "flow_key": "resource_flow",
+                    "name": "资源流程",
+                    "steps": [flow_step, {**flow_step, "step_key": "query_resource_again"}],
+                }
+            ],
+        }
+
+        plan, report = build_execution_plan(assessment, "assessment-sha256")
+
+        self.assertTrue(report["ready"])
+        self.assertEqual(plan["version"], 2)
+        self.assertTrue(plan["ready"])
+        self.assertEqual(plan["data_setup"], [])
+        self.assertEqual(plan["data_cleanup"], [])
+        self.assertEqual(
+            plan["source"],
+            {
+                "preparation_assessment_sha256": "assessment-sha256",
+                "testcase_hash": "approved-hash",
+                "code_review_run_id": "review-1",
+            },
+        )
+        self.assertEqual(plan["requests"][0]["query"], {"id": 17})
+        self.assertEqual(plan["flows"][0]["steps"][0]["id"], "query_resource")
+
+    def test_rejects_mock_data_strategy(self) -> None:
+        errors: list[str] = data_preparation_errors(
+            {
+                "entries": [
+                    {
+                        "id": "target",
+                        "case_keys": ["case_001"],
+                        "strategy": "mock_seed",
+                        "evidence_references": ["table_information.md#target"],
+                        "verification_query_reference": "QRY_TARGET",
+                        "setup": None,
+                        "cleanup": None,
+                    }
+                ]
+            },
+            {"case_001"},
+            {"QRY_TARGET"},
+        )
+
+        self.assertTrue(any("禁止 Mock" in error for error in errors))
+
+    def test_accepts_reused_real_record_without_mutation(self) -> None:
+        errors: list[str] = data_preparation_errors(
+            {
+                "entries": [
+                    {
+                        "id": "target",
+                        "case_keys": ["case_001"],
+                        "strategy": "reuse",
+                        "evidence_references": ["table_information.md#target"],
+                        "verification_query_reference": "QRY_TARGET",
+                        "setup": None,
+                        "cleanup": None,
+                    }
+                ]
+            },
+            {"case_001"},
+            {"QRY_TARGET"},
+        )
+
+        self.assertEqual(errors, [])
+
+
 class QuerySafetyTests(unittest.TestCase):
     def test_validate_select_accepts_read_query(self) -> None:
         validate_select("SELECT id, tenant_id FROM app.activity WHERE is_deleted = 0 LIMIT 20")
@@ -228,6 +347,7 @@ class RenderingTests(unittest.TestCase):
     def test_interface_document_redacts_sensitive_headers(self) -> None:
         assessment: dict[str, object] = {
             "environment": {"name": "test", "api_domain": "https://api.example.test"},
+            "data_preparation": {"entries": []},
             "interface_cases": [
                 {
                     "interface_key": "create",

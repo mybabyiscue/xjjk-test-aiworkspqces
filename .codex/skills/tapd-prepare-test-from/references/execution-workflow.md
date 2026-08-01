@@ -64,7 +64,14 @@ python "$skillPath/scripts/execute_read_query_plan.py" `
   --manifest 'output/test_data_manifest.md'
 ```
 
-真实查询没有返回正向用例所需记录时，将对应用例标记为 `blocked`，不得构造假记录。
+真实查询没有返回正向用例所需记录时，禁止构造假记录。按以下顺序处理：
+
+1. 使用有源码证据的真实业务 API 生成 `api_create` setup，并提供对应 HTTP 或受控 SQL cleanup。
+2. 没有稳定 API 且直接写入不绕过被测行为时，使用用户另行确认的 `controlled-write` 测试连接生成参数化单条 `sql_insert` setup 和按 `TEST_` 标识清理的 `sql_delete` cleanup。
+3. 无法自动创建时输出 `manual_create` 步骤；人工完成后重新运行只读查询，只有查询返回真实记录才能继续。
+4. 只有数据无法安全创建、无法清理或缺少接口/表证据时才标记 `blocked`。
+
+禁止任何 Mock、Fake、Stub 或 Mock seed。新增功能测试不得预创建本次要由被测接口创建的目标对象，只准备真实上游依赖；更新、删除和状态流转用例应创建隔离的真实目标对象。
 
 ## 5. 生成评估映射
 
@@ -97,15 +104,17 @@ python "$skillPath/scripts/render_three_documents.py" `
   --output-dir 'output'
 ```
 
-## 7. 可选执行计划
+## 7. 生成唯一执行计划
 
-仅在准备产物要移交第五步接口执行时运行：
+准备产物要移交第五步接口执行时，直接生成执行器消费的唯一计划：
 
 ```powershell
 python "$skillPath/scripts/build_api_execution_plan.py" `
   --assessment "$preparationPath/preparation_assessment.json" `
-  --plan "$preparationPath/api_execution_plan.json" `
+  --plan "output/test_execution/execution_plan.json" `
   --report "$preparationPath/api_execution_plan_report.json"
 ```
 
-命令返回非零或报告 `ready` 不为 `true` 时，不得调用接口。
+生成器必须把 `preparation_assessment.json` 原始文件 SHA-256、`testcase_hash` 和 `code_review_run_id` 写入计划来源块，并把结构化真实数据 setup/cleanup 写入同一计划。命令返回非零或报告 `ready` 不为 `true` 时，不得调用接口。
+
+第五步必须直接消费该 `execution_plan.json`，并使用同一构建函数从当前 assessment 重建规范计划后完整比较；不得从 Markdown、评估包或聊天上下文生成另一份计划，也不得修补不一致字段。

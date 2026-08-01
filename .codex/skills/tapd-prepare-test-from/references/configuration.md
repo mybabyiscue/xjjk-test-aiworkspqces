@@ -18,6 +18,8 @@
     {
       "name": "环境显示名称",
       "api_domain": "https://api.example.test",
+      "environment_type": "test",
+      "allow_test_data_mutation": true,
       "healthcheck_url": "https://api.example.test/verified-health-endpoint",
       "healthcheck_headers": {"sysType": "1"},
       "healthcheck_success_code": "00000",
@@ -35,7 +37,7 @@
 }
 ```
 
-`healthcheck_url` 必须是已知会校验鉴权且无业务副作用的具体端点，不能只填写不校验鉴权的 `api_domain` 根地址。禁止猜测健康检查路径。端点所需的非敏感固定 Header 写入 `healthcheck_headers`，且必须有前端请求拦截器或后端契约证据；禁止在其中保存 Authorization、Cookie 或其他凭证。若网关以 HTTP 2xx 包装业务错误，必须配置 `healthcheck_success_code` 和 `healthcheck_unauthorized_codes`；登录控件只接受 Stable ID、Test ID 或 Accessibility ID。
+只有 `environment_type` 严格为 `test` 且 `allow_test_data_mutation` 严格为 `true` 时才允许 HTTP/SQL 数据变更；缺失、为其他值或生产环境均立即阻断。`healthcheck_url` 必须是已知会校验鉴权且无业务副作用的具体端点，不能只填写不校验鉴权的 `api_domain` 根地址。禁止猜测健康检查路径。端点所需的非敏感固定 Header 写入 `healthcheck_headers`，且必须有前端请求拦截器或后端契约证据；禁止在其中保存 Authorization、Cookie 或其他凭证。若网关以 HTTP 2xx 包装业务错误，必须配置 `healthcheck_success_code` 和 `healthcheck_unauthorized_codes`；登录控件只接受 Stable ID、Test ID 或 Accessibility ID。
 
 ## 本地凭证
 
@@ -65,6 +67,34 @@
 
 ## 数据库连接
 
-只使用工作区 `config/connections.json`。先展示已启用连接并等待用户确认，然后将确认的连接名传给 `execute_read_query_plan.py --connection-name`。该脚本要求注册表字段为 `connections[].name/host/port/username/password/enabled`。
+只使用工作区 `config/connections.json`。先展示已启用连接并等待用户确认，然后将确认的只读连接名传给 `execute_read_query_plan.py --connection-name`。受控 SQL 写入必须再次单独确认连接名，禁止根据只读连接、环境、表名或历史记录自动选择。
 
-数据库凭证保存在该 Git 忽略文件中，不复制到技能目录或输出产物。默认选择只读账号；无法证明账号只读时立即停止，不执行查询。
+```json
+{
+  "connections": [
+    {
+      "name": "测试只读",
+      "host": "LOCAL_ONLY",
+      "port": 3306,
+      "username": "LOCAL_ONLY",
+      "password": "LOCAL_ONLY",
+      "enabled": true,
+      "access_mode": "read-only"
+    },
+    {
+      "name": "测试受控写入",
+      "host": "LOCAL_ONLY",
+      "port": 3306,
+      "username": "LOCAL_ONLY",
+      "password": "LOCAL_ONLY",
+      "enabled": true,
+      "access_mode": "controlled-write",
+      "environment_name": "环境显示名称",
+      "allowed_databases": ["真实测试库"],
+      "allowed_tables": ["允许构造数据的表"]
+    }
+  ]
+}
+```
+
+数据库凭证保存在该 Git 忽略文件中，不复制到技能目录或输出产物。只读连接必须声明 `access_mode=read-only`；写连接必须声明 `access_mode=controlled-write`、绑定同一测试环境并限定库表白名单，否则立即停止。

@@ -13,6 +13,8 @@ PARAMETER_SOURCE_TYPES: frozenset[str] = frozenset({"database", "upstream_respon
 NON_INTERFACE_CLASSIFICATIONS: frozenset[str] = frozenset({"ui_only", "blocked"})
 VARIANT_TYPES: frozenset[str] = frozenset({"positive", "negative"})
 NEGATIVE_VARIANT_POLICIES: frozenset[str] = frozenset({"covered", "no_verifiable_validation_rule"})
+DATA_PREPARATION_STRATEGIES: frozenset[str] = frozenset({"reuse", "api_create", "sql_insert", "manual_create"})
+DATA_ACTION_TYPES: frozenset[str] = frozenset({"http", "sql_insert", "sql_delete"})
 CASE_TYPES: frozenset[str] = frozenset({"功能测试", "性能测试", "安全性测试"})
 CASE_PRIORITIES: frozenset[str] = frozenset({"P0", "P1", "P2"})
 
@@ -164,6 +166,7 @@ def validation_errors(assessment: JsonObject, cases: list[JsonObject], snapshot:
     if not isinstance(raw_records, list):
         errors.append("assessment.real_data_records 必须是数组。")
     record_references: set[str] = set()
+    nonempty_record_references: set[str] = set()
     for index, raw_record in enumerate(records, start=1):
         if not isinstance(raw_record, dict):
             errors.append(f"real_data_records[{index}] 必须是对象。")
@@ -175,11 +178,15 @@ def validation_errors(assessment: JsonObject, cases: list[JsonObject], snapshot:
                 require_string(raw_record.get(name), f"real_data_records[{index}].{name}")
             require_list(raw_record.get("fields"), f"real_data_records[{index}].fields")
             require_object(raw_record.get("filters"), f"real_data_records[{index}].filters")
-            if not isinstance(raw_record.get("row_count"), int):
+            row_count: object = raw_record.get("row_count")
+            if not isinstance(row_count, int):
                 errors.append(f"real_data_records[{index}].row_count 必须是整数。")
+            elif row_count > 0:
+                nonempty_record_references.add(reference)
             require_list(raw_record.get("records"), f"real_data_records[{index}].records")
         except PreparationError as error:
             errors.append(str(error))
+    errors.extend(data_preparation_errors(assessment.get("data_preparation"), expected_keys, nonempty_record_references))
     coverage: dict[str, int] = {key: 0 for key in expected_keys}
     raw_interfaces: object = assessment.get("interface_cases")
     if not isinstance(raw_interfaces, list):
@@ -205,6 +212,113 @@ def validation_errors(assessment: JsonObject, cases: list[JsonObject], snapshot:
     reason: object = assessment.get("core_flow_blocker_reason")
     if not isinstance(reason, str):
         errors.append("assessment.core_flow_blocker_reason 必须是字符串。")
+    return errors
+
+
+def data_preparation_errors(
+    value: object,
+    expected_case_keys: set[str],
+    nonempty_record_references: set[str],
+) -> list[str]:
+    errors: list[str] = []
+    if not isinstance(value, dict):
+        return ["assessment.data_preparation 必须是对象。"]
+    raw_entries: object = value.get("entries")
+    if not isinstance(raw_entries, list):
+        return ["assessment.data_preparation.entries 必须是数组。"]
+    entry_ids: set[str] = set()
+    action_ids: set[str] = set()
+    for index, raw_entry in enumerate(raw_entries, start=1):
+        field_name: str = f"data_preparation.entries[{index}]"
+        if not isinstance(raw_entry, dict):
+            errors.append(f"{field_name} 必须是对象。")
+            continue
+        try:
+            entry_id: str = require_string(raw_entry.get("id"), f"{field_name}.id")
+            if entry_id in entry_ids:
+                errors.append(f"{field_name}.id 重复：{entry_id}。")
+            entry_ids.add(entry_id)
+            case_keys: list[object] = require_list(raw_entry.get("case_keys"), f"{field_name}.case_keys")
+            if not case_keys or any(not isinstance(key, str) or key not in expected_case_keys for key in case_keys):
+                errors.append(f"{field_name}.case_keys 必须引用已知用例。")
+            strategy: str = require_string(raw_entry.get("strategy"), f"{field_name}.strategy")
+            if strategy not in DATA_PREPARATION_STRATEGIES:
+                errors.append(f"{field_name}.strategy 不合法；禁止 Mock、Fake 或 Stub 数据策略。")
+            evidence: list[object] = require_list(raw_entry.get("evidence_references"), f"{field_name}.evidence_references")
+            if not evidence or any(not isinstance(item, str) or not item.strip() for item in evidence):
+                errors.append(f"{field_name}.evidence_references 必须是非空证据数组。")
+            verification_reference: str = require_string(
+                raw_entry.get("verification_query_reference"),
+                f"{field_name}.verification_query_reference",
+            )
+            if strategy in {"reuse", "manual_create"} and verification_reference not in nonempty_record_references:
+                errors.append(f"{field_name} 必须引用已返回真实记录的查询；手工创建后必须重新查询确认。")
+            setup: object = raw_entry.get("setup")
+            cleanup: object = raw_entry.get("cleanup")
+            if strategy in {"reuse", "manual_create"}:
+                if setup is not None or cleanup is not None:
+                    errors.append(f"{field_name} 的 {strategy} 策略不得包含自动写入动作。")
+                continue
+            isolation_prefix: str = require_string(raw_entry.get("isolation_prefix"), f"{field_name}.isolation_prefix")
+            if not isolation_prefix.startswith("TEST_"):
+                errors.append(f"{field_name}.isolation_prefix 必须以 TEST_ 开头。")
+            setup_type: str = "http" if strategy == "api_create" else "sql_insert"
+            errors.extend(data_action_errors(setup, f"{field_name}.setup", {setup_type}, action_ids))
+            errors.extend(data_action_errors(cleanup, f"{field_name}.cleanup", {"http", "sql_delete"}, action_ids))
+        except PreparationError as error:
+            errors.append(str(error))
+    return errors
+
+
+def data_action_errors(
+    value: object,
+    field_name: str,
+    allowed_types: set[str],
+    action_ids: set[str],
+) -> list[str]:
+    errors: list[str] = []
+    if not isinstance(value, dict):
+        return [f"{field_name} 必须是对象。"]
+    try:
+        action_id: str = require_string(value.get("id"), f"{field_name}.id")
+        if action_id in action_ids:
+            errors.append(f"{field_name}.id 重复：{action_id}。")
+        action_ids.add(action_id)
+        action_type: str = require_string(value.get("type"), f"{field_name}.type")
+        if action_type not in DATA_ACTION_TYPES or action_type not in allowed_types:
+            errors.append(f"{field_name}.type 不合法；只允许真实 HTTP 或受控 SQL 动作，禁止 Mock、Fake、Stub 和 Mock seed。")
+        require_string(value.get("evidence_reference"), f"{field_name}.evidence_reference")
+        manifest: JsonObject = require_object(value.get("manifest"), f"{field_name}.manifest")
+        require_string(manifest.get("database"), f"{field_name}.manifest.database")
+        require_string(manifest.get("table"), f"{field_name}.manifest.table")
+        require_object(manifest.get("record"), f"{field_name}.manifest.record")
+        if action_type == "http":
+            require_string(value.get("method"), f"{field_name}.method")
+            path: str = require_string(value.get("path"), f"{field_name}.path")
+            if not path.startswith("/"):
+                errors.append(f"{field_name}.path 必须是完整网关相对路径。")
+            require_object(value.get("headers"), f"{field_name}.headers")
+            if not isinstance(value.get("authorization_header"), str):
+                errors.append(f"{field_name}.authorization_header 必须是字符串。")
+            require_object(value.get("query"), f"{field_name}.query")
+            if "body" not in value:
+                errors.append(f"{field_name}.body 不得缺失。")
+            expected: JsonObject = require_object(value.get("expected"), f"{field_name}.expected")
+            if not isinstance(expected.get("http_status"), int):
+                errors.append(f"{field_name}.expected.http_status 必须是整数。")
+            assertions: list[object] = require_list(expected.get("response_assertions"), f"{field_name}.expected.response_assertions")
+            if not assertions:
+                errors.append(f"{field_name}.expected.response_assertions 不得为空。")
+        elif action_type in {"sql_insert", "sql_delete"}:
+            require_string(value.get("database"), f"{field_name}.database")
+            require_string(value.get("table"), f"{field_name}.table")
+            require_string(value.get("sql"), f"{field_name}.sql")
+            require_list(value.get("parameters"), f"{field_name}.parameters")
+            expected_rows: object = value.get("expected_affected_rows")
+            if not isinstance(expected_rows, int) or isinstance(expected_rows, bool) or expected_rows < 1:
+                errors.append(f"{field_name}.expected_affected_rows 必须是大于 0 的整数。")
+    except PreparationError as error:
+        errors.append(str(error))
     return errors
 
 
@@ -267,6 +381,9 @@ def request_variant_errors(value: object, field_name: str, record_references: se
                     errors.append(f"{field_name} 的 negative 请求变体必须提供校验依据。")
         require_list(value.get("case_keys"), f"{field_name}.case_keys")
         require_object(value.get("headers"), f"{field_name}.headers")
+        if not isinstance(value.get("authorization_header"), str):
+            errors.append(f"{field_name}.authorization_header 必须是字符串。")
+        require_object(value.get("query"), f"{field_name}.query")
         parameters: list[object] = require_list(value.get("parameters"), f"{field_name}.parameters")
         if "request_body" not in value:
             errors.append(f"{field_name}.request_body 不得缺失。")
@@ -362,22 +479,51 @@ def core_flow_errors(value: object, index: int, expected_keys: set[str], record_
         steps: list[object] = require_list(value.get("steps"), f"{field_name}.steps")
         if len(steps) < 2:
             errors.append(f"{field_name}.steps 至少包含两个接口步骤。")
+        prior_step_keys: set[str] = set()
         for step_index, step in enumerate(steps, start=1):
-            errors.extend(core_flow_step_errors(step, f"{field_name}.steps[{step_index}]", record_references))
+            step_errors, step_key = core_flow_step_errors(
+                step,
+                f"{field_name}.steps[{step_index}]",
+                expected_keys,
+                record_references,
+                prior_step_keys,
+            )
+            errors.extend(step_errors)
+            if step_key:
+                if step_key in prior_step_keys:
+                    errors.append(f"{field_name}.steps[{step_index}].step_key 重复。")
+                prior_step_keys.add(step_key)
     except PreparationError as error:
         errors.append(str(error))
     return errors
 
 
-def core_flow_step_errors(value: object, field_name: str, record_references: set[str]) -> list[str]:
+def core_flow_step_errors(
+    value: object,
+    field_name: str,
+    expected_keys: set[str],
+    record_references: set[str],
+    prior_step_keys: set[str],
+) -> tuple[list[str], str]:
     errors: list[str] = []
     if not isinstance(value, dict):
-        return [f"{field_name} 必须是对象。"]
+        return [f"{field_name} 必须是对象。"], ""
+    step_key: str = ""
     try:
+        step_key = require_string(value.get("step_key"), f"{field_name}.step_key")
+        variant_type: str = require_string(value.get("variant_type"), f"{field_name}.variant_type")
+        if variant_type not in VARIANT_TYPES:
+            errors.append(f"{field_name}.variant_type 不合法。")
+        case_keys: list[object] = require_list(value.get("case_keys"), f"{field_name}.case_keys")
+        if not case_keys or any(not isinstance(key, str) or key not in expected_keys for key in case_keys):
+            errors.append(f"{field_name}.case_keys 必须引用已知用例。")
         evidence: JsonObject = require_object(value.get("interface_evidence"), f"{field_name}.interface_evidence")
         for name in ("service", "controller_file", "controller_method", "http_method", "path"):
             require_string(evidence.get(name), f"{field_name}.interface_evidence.{name}")
         require_object(value.get("headers"), f"{field_name}.headers")
+        if not isinstance(value.get("authorization_header"), str):
+            errors.append(f"{field_name}.authorization_header 必须是字符串。")
+        require_object(value.get("query"), f"{field_name}.query")
         parameters: list[object] = require_list(value.get("parameters"), f"{field_name}.parameters")
         if "request_body" not in value:
             errors.append(f"{field_name}.request_body 不得缺失。")
@@ -387,11 +533,20 @@ def core_flow_step_errors(value: object, field_name: str, record_references: set
         if not require_list(expected.get("response_assertions"), f"{field_name}.expected.response_assertions"):
             errors.append(f"{field_name}.expected.response_assertions 不得为空。")
         require_list(expected.get("database_assertions"), f"{field_name}.expected.database_assertions")
-        require_list(value.get("parameter_dependencies"), f"{field_name}.parameter_dependencies")
+        dependencies: list[object] = require_list(value.get("parameter_dependencies"), f"{field_name}.parameter_dependencies")
+        for dependency_index, raw_dependency in enumerate(dependencies, start=1):
+            dependency: JsonObject = require_object(raw_dependency, f"{field_name}.parameter_dependencies[{dependency_index}]")
+            source_step: str = require_string(dependency.get("source_step"), f"{field_name}.parameter_dependencies[{dependency_index}].source_step")
+            if source_step not in prior_step_keys:
+                errors.append(f"{field_name}.parameter_dependencies[{dependency_index}].source_step 必须引用更早的步骤。")
+            for dependency_field in ("source_path", "target", "target_path"):
+                require_string(dependency.get(dependency_field), f"{field_name}.parameter_dependencies[{dependency_index}].{dependency_field}")
+            if dependency.get("target") not in {"body", "query"}:
+                errors.append(f"{field_name}.parameter_dependencies[{dependency_index}].target 只能是 body 或 query。")
         require_string(value.get("interrupt_condition"), f"{field_name}.interrupt_condition")
         require_list(value.get("cleanup_steps"), f"{field_name}.cleanup_steps")
         for parameter_index, parameter in enumerate(parameters, start=1):
             errors.extend(parameter_errors(parameter, f"{field_name}.parameters[{parameter_index}]", record_references))
     except PreparationError as error:
         errors.append(str(error))
-    return errors
+    return errors, step_key

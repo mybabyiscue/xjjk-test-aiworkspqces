@@ -6,7 +6,7 @@ import argparse
 from copy import deepcopy
 from pathlib import Path
 
-from preparation_contract import read_json_object, require_list, require_string, write_json_object
+from preparation_contract import read_json_object, require_list, require_object, require_string, write_json_object
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -26,6 +26,9 @@ def merge_assessment(
     real_data: dict[str, object],
 ) -> dict[str, object]:
     assessment: dict[str, object] = deepcopy(assessment_shell)
+    assessment["data_preparation"] = deepcopy(
+        require_object(model_mapping.get("data_preparation"), "model_mapping.data_preparation")
+    )
     assessment["interface_cases"] = deepcopy(
         require_list(model_mapping.get("interface_cases"), "model_mapping.interface_cases")
     )
