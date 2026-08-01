@@ -8,6 +8,15 @@ import re
 import sys
 from pathlib import Path
 from typing import Sequence, TypeAlias
+from zipfile import BadZipFile
+
+from openpyxl import load_workbook
+from openpyxl.cell.cell import Cell
+from openpyxl.utils.exceptions import InvalidFileException
+from openpyxl.workbook.workbook import Workbook
+from openpyxl.worksheet.worksheet import Worksheet
+
+from export_test_cases_excel import HEADERS, SHEET_NAME, ExcelRow, build_excel_rows
 
 
 JsonObject: TypeAlias = dict[str, object]
@@ -318,10 +327,99 @@ def validate_questions(markdown: str) -> None:
         raise ValueError("questions.md 表头不符合唯一契约。")
 
 
+def require_excel_row(raw_row: tuple[object, ...], row_number: int) -> ExcelRow:
+    if len(raw_row) != len(HEADERS):
+        raise ValueError(
+            f"test_cases.xlsx 第 {row_number} 行列数不符合契约；"
+            f"期望 {len(HEADERS)}，实际 {len(raw_row)}。"
+        )
+    return tuple(
+        require_string(value, f"test_cases.xlsx[{row_number},{column_number}]")
+        for column_number, value in enumerate(raw_row, start=1)
+    )
+
+
+def validate_excel_workbook(path: Path, payload: JsonObject) -> None:
+    if not path.is_file():
+        raise ValueError(f"缺少 Excel 产物: {path}")
+    try:
+        workbook: Workbook = load_workbook(path, read_only=False, data_only=True)
+    except (OSError, ValueError, BadZipFile, InvalidFileException) as error:
+        raise ValueError(f"无法读取 Excel 文件 {path}: {error}") from error
+
+    try:
+        if workbook.sheetnames != [SHEET_NAME]:
+            raise ValueError(
+                f"test_cases.xlsx 工作表不符合契约；"
+                f"期望={[SHEET_NAME]}，实际={workbook.sheetnames}。"
+            )
+        worksheet: Worksheet = workbook[SHEET_NAME]
+        raw_header: tuple[object, ...] = tuple(
+            worksheet.cell(row=1, column=index).value
+            for index in range(1, len(HEADERS) + 1)
+        )
+        if raw_header != HEADERS:
+            raise ValueError(
+                f"test_cases.xlsx 表头不符合契约；期望={HEADERS}，实际={raw_header}。"
+            )
+        if worksheet.max_column != len(HEADERS):
+            raise ValueError(
+                f"test_cases.xlsx 包含额外列；"
+                f"期望 {len(HEADERS)}，实际 {worksheet.max_column}。"
+            )
+        if str(worksheet.freeze_panes) != "A2":
+            raise ValueError(
+                f"test_cases.xlsx 必须冻结首行；实际 freeze_panes={worksheet.freeze_panes}。"
+            )
+        expected_filter: str = f"A1:N{worksheet.max_row}"
+        if worksheet.auto_filter.ref != expected_filter:
+            raise ValueError(
+                f"test_cases.xlsx 自动筛选范围不符合契约；"
+                f"期望={expected_filter}，实际={worksheet.auto_filter.ref}。"
+            )
+        if worksheet.merged_cells.ranges:
+            raise ValueError("test_cases.xlsx 不允许包含合并单元格。")
+
+        expected_rows: list[ExcelRow] = build_excel_rows(payload)
+        if worksheet.max_row - 1 != len(expected_rows):
+            raise ValueError(
+                f"test_cases.xlsx 与 tapd_cases.json 用例数量不一致；"
+                f"Excel={worksheet.max_row - 1}，JSON={len(expected_rows)}。"
+            )
+
+        for index, expected_row in enumerate(expected_rows, start=2):
+            raw_row: tuple[object, ...] = tuple(
+                worksheet.cell(row=index, column=column).value
+                for column in range(1, len(HEADERS) + 1)
+            )
+            actual_row: ExcelRow = require_excel_row(raw_row, index)
+            for column in range(1, len(HEADERS) + 1):
+                cell: Cell = worksheet.cell(row=index, column=column)
+                if cell.alignment.wrap_text is not True or cell.alignment.vertical != "top":
+                    raise ValueError(
+                        f"test_cases.xlsx[{index},{column}] 必须启用自动换行和顶端对齐。"
+                    )
+            if actual_row == expected_row:
+                continue
+            for column, (actual, expected) in enumerate(
+                zip(actual_row, expected_row, strict=True),
+                start=1,
+            ):
+                if actual != expected:
+                    case_id: str = expected_row[0]
+                    raise ValueError(
+                        f"{case_id}.{HEADERS[column - 1]} 在 Excel 与 JSON 中不一致；"
+                        f"Excel={actual!r}，JSON={expected!r}。"
+                    )
+    finally:
+        workbook.close()
+
+
 def validate_output_directory(output_directory: Path) -> None:
     test_cases_path: Path = output_directory / "test_cases.md"
     questions_path: Path = output_directory / "questions.md"
     tapd_cases_path: Path = output_directory / "tapd_cases.json"
+    test_cases_excel_path: Path = output_directory / "test_cases.xlsx"
 
     test_cases_markdown: str = read_text(test_cases_path)
     questions_markdown: str = read_text(questions_path)
@@ -331,6 +429,7 @@ def validate_output_directory(output_directory: Path) -> None:
     validate_case_sequence(markdown_cases)
     validate_questions(questions_markdown)
     validate_json_payload(payload, markdown_cases)
+    validate_excel_workbook(test_cases_excel_path, payload)
 
 
 def parse_arguments(argv: Sequence[str]) -> argparse.Namespace:
@@ -348,7 +447,7 @@ def main(argv: Sequence[str]) -> int:
     except ValueError as error:
         print(f"Validation failed: {error}", file=sys.stderr)
         return 1
-    print("Validation passed: testcase artifacts match the contract.")
+    print("Validation passed: Markdown, questions, JSON, and Excel artifacts match the contract.")
     return 0
 
 
