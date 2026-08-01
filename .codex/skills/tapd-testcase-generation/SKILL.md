@@ -1,6 +1,6 @@
 ---
 name: tapd-testcase-generation
-description: 读取已通过需求分析的 output/requirement.md，执行输入门禁、需求疑问点隔离、BLAST 测试点矩阵规划和 BDD Given-When-Then 用例生成，输出 test_cases.md、questions.md 与 tapd_cases.json。用于 TAPD 需求完成质量审计后生成测试用例，或结合 review_history.md 修订用例；不用于需求分析、代码审查、数据库查询、TAPD 同步或最终审批。
+description: 读取已通过需求分析的 output/requirement.md，执行输入门禁、需求疑问点隔离、BLAST 测试点矩阵规划和 BDD Given-When-Then 用例生成，输出 test_cases.md、questions.md、tapd_cases.json 与 test_cases.xlsx。用于 TAPD 需求完成质量审计后生成测试用例，或结合 review_history.md 修订用例；不用于需求分析、代码审查、数据库查询、TAPD 同步或最终审批。
 ---
 
 # TAPD 测试用例生成
@@ -64,15 +64,24 @@ description: 读取已通过需求分析的 output/requirement.md，执行输入
 - 仅激活需求证据明确涉及的层级。
 - 在对话中声明复杂等级：模块/系统级、功能级或修补/微调级。数量区间只用于评估，不作为凑数指标。
 
-### 3. 生成三个产物
+### 3. 生成四个产物
 
 严格按 `references/authoring-rules.md` 生成：
 
 - `output/test_cases.md`
 - `output/questions.md`
 - `output/tapd_cases.json`
+- `output/test_cases.xlsx`
 
-同时生成 `output/agent2_prompt.md`，记录输入路径、输入摘要、质量门禁结果、复杂等级、已加载经验文件和生成时间。不得写入凭证或需求正文之外的推断。
+先按同一份结构化用例数据生成 Markdown 与 JSON，再执行：
+
+```powershell
+python .codex/skills/tapd-testcase-generation/scripts/export_test_cases_excel.py output
+```
+
+Excel 必须由最新的 `output/tapd_cases.json` 全量生成，不得从 Markdown 反向解析，也不得在旧工作簿上局部修改。首次生成、用户评审修订和确定性校验失败后的内部修正都必须同步重新生成四个产物。
+
+同时生成 `output/agent2_prompt.md`，记录输入路径、输入摘要、质量门禁结果、复杂等级、已加载经验文件、Excel 产物路径和生成时间。不得写入凭证或需求正文之外的推断。
 
 ### 4. 分级
 
@@ -90,7 +99,7 @@ description: 读取已通过需求分析的 output/requirement.md，执行输入
 python .codex/skills/tapd-testcase-generation/scripts/validate_outputs.py output
 ```
 
-校验失败时，根据具体错误修改产物后重试，最多重试 2 次。第 3 次仍失败时停止，报告失败字段和用例编号，并将无法自动修正的需求问题写入 `questions.md`。不得降低校验标准或删除有效测试点以通过校验。
+校验失败时，根据具体错误修改产物后重试，最多重试 2 次。用例内容、Markdown 或 JSON 发生变化时必须重新生成全部四个产物；仅 Excel 与 JSON 不一致时允许从最新 JSON 单独重建 Excel。第 3 次仍失败时停止，报告失败字段和用例编号，并将无法自动修正的需求问题写入 `questions.md`。不得降低校验标准或删除有效测试点以通过校验。
 
 ### 6. 展示摘要并移交
 
@@ -100,6 +109,7 @@ python .codex/skills/tapd-testcase-generation/scripts/validate_outputs.py output
 - Happy Path、Alternative/Error、Edge Cases、Compatibility 覆盖数量；
 - 需求功能点覆盖数、总数和未覆盖功能点；
 - `questions.md` 中各问题类型数量；
+- `test_cases.xlsx` 路径及其与 JSON 的一致性；
 - 输出校验结果。
 
 标记用例为“待代码证据复查”，下一步移交 `tapd-code-source-review`。该技能完成代码证据审查并获得用户明确批准后，才可生成 `output/latest/testcase_confirmation.json` 和沉淀知识。
@@ -111,14 +121,15 @@ python .codex/skills/tapd-testcase-generation/scripts/validate_outputs.py output
 1. 要求或读取明确的被拒绝用例、原因和期望方向。
 2. 按 `references/authoring-rules.md` 追加到 `output/review_history.md`。
 3. 重新读取需求、评审历史和命中的经验文件。
-4. 重新生成三个产物并执行确定性校验。
-5. 不重复已记录的相同错误。
+4. 重新生成 `test_cases.md`、`questions.md` 和 `tapd_cases.json`，再根据最新 JSON 全量生成 `test_cases.xlsx`。
+5. 对四个产物执行确定性校验。
+6. 不重复已记录的相同错误。技能内部校验失败后的自动修正不新增评审轮次。
 
 ## 完成条件
 
 - 输入门禁通过，所有测试点均可追溯到需求证据。
 - 疑问范围与已确认范围严格隔离。
-- 三个产物符合唯一契约并通过 `validate_outputs.py`。
-- Markdown 与 JSON 的用例编号、数量、标题顺序、优先级和核心字段一致。
+- 四个产物符合唯一契约并通过 `validate_outputs.py`。
+- Markdown、JSON 与 Excel 的用例编号、数量、标题顺序、优先级和核心字段一致。
 - 已展示覆盖摘要并明确移交 `tapd-code-source-review`。
 - 未执行数据库查询、源码推断、TAPD 同步、最终审批或知识沉淀。

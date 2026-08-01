@@ -1,6 +1,6 @@
 # Test Case Authoring And Output Contract
 
-本文件是 `test_cases.md`、`questions.md`、`tapd_cases.json` 和 `review_history.md` 的唯一格式契约。`SKILL.md` 不重复定义字段结构。
+本文件是 `test_cases.md`、`questions.md`、`tapd_cases.json`、`test_cases.xlsx` 和 `review_history.md` 的唯一格式契约。`SKILL.md` 不重复定义字段结构。
 
 ## 1. `test_cases.md`
 
@@ -116,7 +116,39 @@ JSON 根节点和用例对象只使用以下字段：
 - `case_type`、`case_status`、`priority` 使用第1节规定的枚举值。
 - JSON 与 Markdown 的用例编号、数量、标题顺序、目录、需求ID、类型、状态、优先级和标题完全一致。
 
-## 4. `review_history.md`
+## 4. `test_cases.xlsx`
+
+工作簿固定输出到 `output/test_cases.xlsx`，并满足以下契约：
+
+- 工作簿只包含一个名为 `测试用例` 的工作表。
+- 第一行为表头，一条测试用例占一行，行顺序与 `tapd_cases.json.cases` 完全一致。
+- 冻结首行并启用自动筛选；所有数据单元格启用自动换行和顶端对齐。
+- 不合并数据单元格，不增加契约之外的列，不在工作簿内维护独立业务规则。
+
+表头及顺序固定为：
+
+| 列序号 | 表头 | JSON 来源 |
+|---|---|---|
+| 1 | 用例编号 | `case_id` |
+| 2 | 用例名称 | `title` |
+| 3 | 用例目录 | `directory` |
+| 4 | 需求ID | `requirement_id` |
+| 5 | 用例类型 | `case_type` |
+| 6 | 用例状态 | `case_status` |
+| 7 | 用例等级 | `priority` |
+| 8 | 所属端/角色/系统 | `system_scope` |
+| 9 | 功能模块 | `module` |
+| 10 | 前置条件 | `precondition` |
+| 11 | 测试步骤 | `steps` |
+| 12 | 预期结果 | `expected_results` |
+| 13 | 关联需求点 | `requirement_points` |
+| 14 | 备注 | `remarks` |
+
+`steps`、`expected_results` 和 `requirement_points` 使用 `1. 内容` 格式在单元格内换行。Excel 必须由最新的 `tapd_cases.json` 全量生成，不得从 Markdown 反向解析或在旧工作簿上局部修改。
+
+Excel 与 JSON 的用例数量、编号、顺序和全部字段必须一致。任何差异均视为产物校验失败。
+
+## 5. `review_history.md`
 
 用户要求修订时按轮次追加，不覆盖历史：
 
@@ -130,6 +162,8 @@ JSON 根节点和用例对象只使用以下字段：
 
 拒绝原因或修改方向不明确时，先向用户确认，不写模糊记录。
 
-## 5. 移交
+技能内部确定性校验失败后的自动修正不新增评审轮次。用户提出新的修订意见时才追加新一轮记录。
+
+## 6. 移交
 
 产物通过校验后移交 `tapd-code-source-review`。本技能不得生成或修改 `output/latest/testcase_confirmation.json`，不得更新知识库经验条目，不得同步 TAPD。
