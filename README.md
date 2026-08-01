@@ -31,6 +31,6 @@ system-context/      可复用的业务与系统上下文
 1. 在 `config/credentials.local.json` 中维护 TAPD 配置。
 2. 在 `config/environments_config.json` 中维护测试平台和数据库配置。
 3. 使用 `xjjk-yewu-sql` 的命令登记只读数据库连接；连接信息保存在 `config/connections.json`，该文件不会提交。
-4. 安装项目依赖：`python -m pip install -r requirements-workflow.txt`。
+4. 安装项目依赖：`python -m pip install -r requirements-workflow.txt。
 
 敏感配置、数据库缓存、执行输出和临时代码均由 `.gitignore` 排除。
