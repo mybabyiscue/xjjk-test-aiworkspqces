@@ -151,13 +151,16 @@ class WorkspaceConfigurationContractTests(unittest.TestCase):
         self.assertNotIn(".codex/skills/xjjk-yewu-sql/state/connections.json", combined)
         self.assertNotIn("C:\\Users\\Administrator\\.codex\\skills", combined)
 
-    def test_token_gate_requires_an_authenticated_endpoint_and_application_code(self) -> None:
+    def test_token_gate_uses_direct_credentials_and_data_driven_rules(self) -> None:
         configuration_text: str = (SKILL_PATH / "references" / "configuration.md").read_text(encoding="utf-8")
+        workflow_text: str = (SKILL_PATH / "references" / "execution-workflow.md").read_text(encoding="utf-8")
 
-        self.assertIn("不能只填写不校验鉴权的 `api_domain` 根地址", configuration_text)
-        self.assertIn("healthcheck_headers", configuration_text)
-        self.assertIn("healthcheck_success_code", configuration_text)
-        self.assertIn("healthcheck_unauthorized_codes", configuration_text)
+        self.assertIn("`token_probe` 是可选的数据驱动规则", configuration_text)
+        self.assertIn("禁止按环境名称、域名、路径或业务码", configuration_text)
+        self.assertIn("authorization", configuration_text)
+        self.assertIn("allow_test_data_mutation", configuration_text)
+        self.assertIn("validate_environment_token.py", workflow_text)
+        self.assertNotIn("config/credentials.local.json", configuration_text)
 
 
 class AssessmentTests(unittest.TestCase):

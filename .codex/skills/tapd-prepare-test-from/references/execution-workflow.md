@@ -15,12 +15,27 @@
 - `output/code_review/latest/core_process_interfaces.md`
 - `output/code_review/latest/source_manifest.json`
 - `config/environments_config.json`
-- `config/credentials.local.json`
 - `config/connections.json`
 
 不要用根目录下的兼容副本替代 `output/code_review/latest/` 证据。
 
-## 2. 确认输入快照
+## 2. Token Gate
+
+用户确认单个 API 环境后执行。脚本只按环境具备的 `token_probe` 或登录字段选择能力，不按名称、域名或业务码分支：
+
+```powershell
+$skillPath = Resolve-Path '.codex/skills/tapd-prepare-test-from'
+python "$skillPath/scripts/validate_environment_token.py" `
+  --config 'config/environments_config.json' `
+  --environment-name '<用户确认的环境名>' `
+  --request-timeout-seconds 10 `
+  --retry-count 3 `
+  --browser-timeout-ms 30000
+```
+
+此命令失败时停止。不得把 `api_domain` 根地址当作探测端点，不得猜测响应业务码、登录定位信息或 Token 格式。脚本成功续期时只原子更新所选环境的 `authorization`。
+
+## 3. 确认输入快照
 
 ```powershell
 $skillPath = Resolve-Path '.codex/skills/tapd-prepare-test-from'
@@ -42,7 +57,7 @@ python "$skillPath/scripts/validate_confirmed_input.py" `
 
 此命令失败时停止。脚本会将三份当前代码审查证据与 `evidence_index.json.artifacts` 逐一核对，并把证据索引本身纳入不可变快照；不得跳过哈希、审批或 schema 错误。
 
-## 3. 初始化评估壳
+## 4. 初始化评估壳
 
 ```powershell
 python "$skillPath/scripts/initialize_preparation_assessment.py" `
@@ -51,7 +66,7 @@ python "$skillPath/scripts/initialize_preparation_assessment.py" `
   --output "$preparationPath/preparation_assessment_shell.json"
 ```
 
-## 4. 生成并执行只读查询计划
+## 5. 生成并执行只读查询计划
 
 按照 [assessment-contract.md](assessment-contract.md) 生成 `$preparationPath/query_plan.json`。每个表和字段必须来自 `table_information.md`，查询目的必须关联用例。禁止执行未经用户确认数据库平台的查询。
 
@@ -73,7 +88,7 @@ python "$skillPath/scripts/execute_read_query_plan.py" `
 
 禁止任何 Mock、Fake、Stub 或 Mock seed。新增功能测试不得预创建本次要由被测接口创建的目标对象，只准备真实上游依赖；更新、删除和状态流转用例应创建隔离的真实目标对象。
 
-## 5. 生成评估映射
+## 6. 生成评估映射
 
 读取评估壳、用例、全部代码审查证据和真实查询记录，按照 [assessment-contract.md](assessment-contract.md) 生成 `$preparationPath/model_mapping.json`。不从 URL 名称猜测 HTTP Method，不新增需求或代码中不存在的断言。
 
@@ -85,7 +100,7 @@ python "$skillPath/scripts/build_assessment_from_model.py" `
   --output "$preparationPath/preparation_assessment.json"
 ```
 
-## 6. 校验并渲染
+## 7. 校验并渲染
 
 ```powershell
 python "$skillPath/scripts/validate_preparation_assessment.py" `
@@ -104,7 +119,7 @@ python "$skillPath/scripts/render_three_documents.py" `
   --output-dir 'output'
 ```
 
-## 7. 生成唯一执行计划
+## 8. 生成唯一执行计划
 
 准备产物要移交第五步接口执行时，直接生成执行器消费的唯一计划：
 

@@ -45,6 +45,15 @@ def main() -> int:
     if inputs.get("test_cases_sha256") != testcase_hash:
         raise ValueError("test_cases.md changed after review preparation")
 
+    requirement_review = read_json_object(
+        run_dir / "requirement_review_status.json", "requirement review status"
+    )
+    requirement_status = requirement_review.get("status")
+    if requirement_status not in {"completed", "completed_with_risk"}:
+        raise ValueError(
+            "Requirement implementation review is halted; record the user's explicit decision before publishing"
+        )
+
     hashes = artifact_hashes(run_dir)
     unresolved = read_json_object(run_dir / "raw" / "table_resolution.json", "table resolution")
     raw_tables = unresolved.get("tables")
@@ -62,6 +71,7 @@ def main() -> int:
         "validated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
         "testcase_hash": testcase_hash,
         "unresolved_table_count": unresolved_count,
+        "requirement_review_status": requirement_status,
         "artifacts": hashes,
     }
     write_json(run_dir / "review_validation.json", validation)
